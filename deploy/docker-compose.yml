@@ -36,6 +36,8 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       XRTEL_NAMESPACE: ${XRTEL_NAMESPACE:-}
       ARCHIVE_DB: /data/xrtel.sqlite
+      ARCHIVE_RETENTION_DAYS: ${ARCHIVE_RETENTION_DAYS:-30}
+      ARCHIVE_MAX_MB: ${ARCHIVE_MAX_MB:-0}
       PORT: "8091"
     volumes: [archive_data:/data]
     # No ports: only the gateway talks to it, on the compose network.

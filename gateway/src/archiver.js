@@ -37,11 +37,16 @@ const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
  * @param {number} [opt.liveWindowMs=60000]      a sample without a session that is newer than
  *                                               this is filed under session:current; older ones
  *                                               (history read at first start) under '_none'
+ * @param {number} [opt.retentionDays=30]       delete sessions whose last sample is older; 0 = keep forever
+ * @param {number} [opt.maxMb=0]                 also delete the oldest finished sessions while the
+ *                                               database is larger than this; 0 = no size limit
+ * @param {number} [opt.purgeEveryMs=3600000]    how often both limits are applied
  * @param {boolean}[opt.log=true]
  */
 function createArchiver({
   redisUrl = 'redis://127.0.0.1:6379', namespace = '', dbPath = 'xrtel.sqlite', port = 8091,
-  group = 'xrtel-archiver', consumer = 'archiver-1', scanMs = 3000, liveWindowMs = 60000, log = true,
+  group = 'xrtel-archiver', consumer = 'archiver-1', scanMs = 3000, liveWindowMs = 60000,
+  retentionDays = 30, maxMb = 0, purgeEveryMs = 3600000, log = true,
 } = {}) {
   const ns = namespace ? `${namespace.replace(/:+$/, '')}:` : '';
   const say = (...a) => { if (log) console.log('[xrtel-archiver]', ...a); };
@@ -168,6 +173,62 @@ function createArchiver({
   const ready = new Promise((resolve) => redis.once('ready', resolve));
   const loop = ready.then(run).catch((e) => say('stopped:', e.message));
 
+  // ── retention ─────────────────────────────────────────────────────────
+  // Whole sessions go, never half of one, and never the running one. `_none`
+  // (samples outside any session) never ends, so it is trimmed row by row.
+  const dbBytes = () => {
+    const page = db.prepare('PRAGMA page_size').get().page_size;
+    const used = db.prepare('PRAGMA page_count').get().page_count - db.prepare('PRAGMA freelist_count').get().freelist_count;
+    return used * page;
+  };
+  function dropSession(id) {
+    db.prepare('DELETE FROM samples WHERE session = ?').run(id);
+    db.prepare('DELETE FROM session_streams WHERE session = ?').run(id);
+    redis.del(`${ns}session:${id}:meta`).catch(() => {});
+  }
+  function trimNone(beforeTs) {
+    const r = db.prepare('DELETE FROM samples WHERE session = ? AND ts < ?').run(NO_SESSION, beforeTs);
+    if (!r.changes) return 0;
+    db.prepare('DELETE FROM session_streams WHERE session = ?').run(NO_SESSION);
+    db.prepare(`INSERT INTO session_streams (session, device, signal, n, first_ts, last_ts)
+                SELECT session, device, signal, count(*), min(ts), max(ts) FROM samples WHERE session = ?
+                GROUP BY session, device, signal`).run(NO_SESSION);
+    return r.changes;
+  }
+  async function purge(now = Date.now() / 1000) {
+    const current = await currentSession();
+    const dropped = [];
+    let trimmed = 0;
+    const finished = () => db.prepare(`SELECT session, max(last_ts) AS last FROM session_streams
+                                      WHERE session NOT IN (?, ?) GROUP BY session ORDER BY last`).all(NO_SESSION, current || '');
+    if (retentionDays > 0) {
+      const cutoff = now - retentionDays * 86400;
+      for (const r of finished()) if (r.last < cutoff) { dropSession(r.session); dropped.push(r.session); }
+      trimmed += trimNone(cutoff);
+    }
+    if (maxMb > 0) {
+      const limit = maxMb * 1024 * 1024;
+      // Oldest first, until under the limit; `_none` counts as the oldest material it holds.
+      while (dbBytes() > limit) {
+        const oldest = finished()[0];
+        const noneFirst = db.prepare('SELECT min(ts) AS t FROM samples WHERE session = ?').get(NO_SESSION).t;
+        if (noneFirst != null && (!oldest || noneFirst < oldest.last)) { trimmed += trimNone(Math.min(noneFirst + 3600, oldest ? oldest.last : now)); continue; }
+        if (!oldest) { say(`archive over ${maxMb} MB but only the running session is left`); break; }
+        dropSession(oldest.session); dropped.push(oldest.session);
+      }
+    }
+    // SQLite reuses freed pages but does not give them back: VACUUM shrinks the file.
+    if (dropped.length || trimmed) {
+      db.exec('VACUUM');
+      say(`retention: deleted ${dropped.length ? 'sessions ' + dropped.join(', ') : 'no sessions'}` +
+          `${trimmed ? `, ${trimmed} samples outside sessions` : ''}; now ${(dbBytes() / 1048576).toFixed(1)} MB`);
+    }
+    return { dropped, trimmed };
+  }
+  const purger = (retentionDays > 0 || maxMb > 0) && setInterval(() => purge().catch((e) => say('retention:', e.message)), purgeEveryMs);
+  let firstPurge = null;                     // a minute after start: a restarted archiver catches up on retention
+  if (purger) ready.then(() => { if (!stopped) firstPurge = setTimeout(() => purge().catch((e) => say('retention:', e.message)), 60000); });
+
   // ── queries ───────────────────────────────────────────────────────────
   async function sessions() {
     const rows = db.prepare(`SELECT session, sum(n) AS samples, min(first_ts) AS first_ts, max(last_ts) AS last_ts,
@@ -175,8 +236,11 @@ function createArchiver({
                              FROM session_streams GROUP BY session ORDER BY last_ts DESC`).all();
     const current = await currentSession();
     const out = [];
-    for (const r of rows) out.push({ ...(await sessionMeta(r.session)), ...summary(r), current: r.session === current });
-    return { current, sessions: out };
+    for (const r of rows) {
+      const expires = retentionDays > 0 && r.session !== current && r.session !== NO_SESSION ? r.last_ts + retentionDays * 86400 : null;
+      out.push({ ...(await sessionMeta(r.session)), ...summary(r), current: r.session === current, expires_ts: expires });
+    }
+    return { current, retention_days: retentionDays || null, max_mb: maxMb || null, size_mb: round(dbBytes() / 1048576, 1), sessions: out };
   }
 
   async function session(id) {
@@ -186,8 +250,10 @@ function createArchiver({
     const marks = db.prepare(`SELECT ts, fields FROM samples WHERE session = ? AND signal = 'event' AND device = 'operator'
                               ORDER BY ts`).all(id).map((r) => ({ ts: r.ts, ...pick(JSON.parse(r.fields), ['name', 'value']) }));
     const first = Math.min(...streamsRows.map((r) => r.first_ts)), last = Math.max(...streamsRows.map((r) => r.last_ts));
+    const running = id === await currentSession();
     return {
       ...(await sessionMeta(id)), session: id, first_ts: first, last_ts: last, duration_s: round(last - first, 1),
+      expires_ts: retentionDays > 0 && !running && id !== NO_SESSION ? last + retentionDays * 86400 : null,
       samples: streamsRows.reduce((a, r) => a + r.n, 0),
       streams: streamsRows.map((r) => ({ ...r, rate_hz: r.last_ts > r.first_ts ? round((r.n - 1) / (r.last_ts - r.first_ts), 1) : null })),
       marks,
@@ -233,7 +299,8 @@ function createArchiver({
     const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
     try {
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(405, { error: 'method not allowed' });
-      if (parts.length === 1 && parts[0] === 'health') return json(200, { ok: redis.status === 'ready', streams: streams.size, archived });
+      if (parts.length === 1 && parts[0] === 'health') return json(200, { ok: redis.status === 'ready', streams: streams.size, archived,
+        size_mb: round(dbBytes() / 1048576, 1), retention_days: retentionDays || null, max_mb: maxMb || null });
       if (parts[0] !== 'sessions') return json(404, { error: 'not found' });
       if (parts.length === 1) return json(200, await sessions());
       const id = decodeURIComponent(parts[1]);
@@ -263,15 +330,17 @@ function createArchiver({
     }
   });
   const listening = server ? new Promise((r) => server.listen(port, () => {
-    say(`listening on http://0.0.0.0:${server.address().port}  db=${dbPath}  redis=${redisUrl}  ns=${ns || '(none)'}`);
+    say(`listening on http://0.0.0.0:${server.address().port}  db=${dbPath}  redis=${redisUrl}  ns=${ns || '(none)'}  ` +
+        `retention=${retentionDays > 0 ? retentionDays + ' days' : 'forever'}  max=${maxMb > 0 ? maxMb + ' MB' : 'none'}`);
     r();
   })) : Promise.resolve();
 
   return {
-    server, db, ready: Promise.all([ready, listening]), sessions, session, exportTo,
+    server, db, ready: Promise.all([ready, listening]), sessions, session, exportTo, purge,
     get archived() { return archived; },
     async close() {
       stopped = true;
+      clearInterval(purger); clearTimeout(firstPurge);
       reader.disconnect();                       // unblocks a pending XREADGROUP
       await loop;
       if (server) await new Promise((r) => server.close(() => r()));

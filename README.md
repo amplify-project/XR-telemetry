@@ -14,13 +14,18 @@ Developed in the [AMPLIFY](https://github.com/amplify-project) project.
 
 XR-telemetry is a **convention over Redis**, plus a few small pieces:
 
-```
- WebXR / browser ──WS──▶ gateway ──┐
- Unity / Python ───────────────────┼──▶ Redis  device:{src}:{signal}   Pub/Sub (live) + Streams (history)
- wearables, CV pipelines ──────────┘                 │
-                                    ┌────────────────┼──────────────────┐
-                              live consumers     archiver            any service
-                              (render, AR)    → PostgreSQL / Parquet   in any language
+```mermaid
+flowchart LR
+  quest["WebXR / browser<br/>JS SDK"] -- wss --> gw[gateway]
+  unity["Unity · Python"] -- wss --> gw
+  wear["wearables<br/>Physiological-Signals"] -- "PUBLISH + XADD" --> redis
+  gw --> redis[("Redis<br/>device:{src}:{signal}<br/>Pub/Sub live · Streams history")]
+  redis --> gw
+  redis --> ar[archiver] --> db[("SQLite<br/>sessions")]
+  gw --> ui["operator console<br/>/ui/"]
+  gw --> cli[xrtel CLI]
+  gw --> live[live consumers]
+  redis --> any["any service<br/>any language"]
 ```
 
 - **Key space and sample format** — anything that follows it interoperates,
@@ -93,6 +98,8 @@ and mapped to spec `pose` samples.
 ## Documents
 
 - [`docs/running-a-test.md`](docs/running-a-test.md) — from headsets on to a CSV
+- [`docs/architecture.md`](docs/architecture.md) — how it works, with diagrams
+- [`docs/deployment.md`](docs/deployment.md) — laptop, lab LAN, cloud (EC2 + CloudFront), troubleshooting, retention
 - [`docs/spec.md`](docs/spec.md) — the specification (draft v0.1)
 
 ## Roadmap

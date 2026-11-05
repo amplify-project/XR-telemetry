@@ -10,6 +10,8 @@ const ar = createArchiver({
   dbPath:    env.ARCHIVE_DB || 'xrtel.sqlite',
   port:      env.PORT ? +env.PORT : 8091,
   consumer:  env.ARCHIVER_NAME || 'archiver-1',
+  retentionDays: env.ARCHIVE_RETENTION_DAYS !== undefined && env.ARCHIVE_RETENTION_DAYS !== '' ? +env.ARCHIVE_RETENTION_DAYS : 30,
+  maxMb:     env.ARCHIVE_MAX_MB ? +env.ARCHIVE_MAX_MB : 0,
 });
 const stop = () => ar.close().then(() => process.exit(0));
 process.on('SIGINT', stop);

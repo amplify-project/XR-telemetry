@@ -185,6 +185,20 @@ function client(url, skewMs = 0) {
   const now = await (await call('GET', '/session')).json();
   check(stopped.stopped === 'pilot-x' && !!stopped.meta.ended && now.current === null, 'operator stops the session', stopped);
 
+  // ── retention ──
+  const day = 86400, old = Date.now() / 1000 - 40 * day;
+  const fake = ar.db.prepare(`INSERT INTO samples (session, device, signal, ts, srv_ts, timestamp, stream_id, fields) VALUES (?, 'old-dev', 'pose', ?, ?, ?, ?, '{}')`);
+  const fakeSum = ar.db.prepare(`INSERT INTO session_streams (session, device, signal, n, first_ts, last_ts) VALUES (?, 'old-dev', 'pose', 1, ?, ?)`);
+  fake.run('ancient', old, old, old, '1-0'); fakeSum.run('ancient', old, old);
+  fake.run('_none', old, old, old, '2-0');
+  const listed = await (await call('GET', '/sessions')).json();
+  check(listed.retention_days === 30 && listed.sessions.find((x) => x.session === 'pilot-x')?.expires_ts > Date.now() / 1000 + 29 * day,
+        'sessions report when they will be deleted (30 days after the last sample)');
+  const purged = await ar.purge();
+  const after = (await (await call('GET', '/sessions')).json()).sessions.map((x) => x.session);
+  check(purged.dropped.join() === 'ancient' && purged.trimmed === 1 && !after.includes('ancient') && after.includes('pilot-x') && after.includes('rehearsal-a'),
+        'retention deletes a 40-day-old session and old samples outside sessions, keeps the rest', { purged, after });
+
   // ── operator console page ──
   const ui = await fetch(H + '/ui/');
   check(ui.status === 200 && (await ui.text()).includes('XR-telemetry') && (await fetch(H + '/', { redirect: 'manual' })).status === 302,

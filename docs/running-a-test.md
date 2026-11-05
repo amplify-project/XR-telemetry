@@ -134,6 +134,11 @@ acknowledges a sample only once it is committed, so it loses nothing while it
 runs and catches up after a restart, as long as it was down for less than
 that window.
 
+The archive is not forever: a session is deleted **30 days after its last
+sample** by default (`ARCHIVE_RETENTION_DAYS`), and the oldest ones go first if
+the archive outgrows `ARCHIVE_MAX_MB`. `xrtel sessions` and the console show
+each session's deletion date. Export what you need to keep.
+
 Back up the archive with:
 
 ```bash

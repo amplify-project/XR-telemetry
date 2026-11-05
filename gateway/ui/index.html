@@ -178,10 +178,10 @@ tbody tr.sel { background: var(--chip); }
     </section>
 
     <section class="full">
-      <h2>Recorded sessions <span class="right"><button class="btn small" id="refresh">Refresh</button></span></h2>
+      <h2>Recorded sessions <span class="right row" style="gap:10px"><span class="muted" id="keep"></span><button class="btn small" id="refresh">Refresh</button></span></h2>
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Session</th><th>Started</th><th class="num">Length</th><th class="num">Samples</th><th>Devices</th></tr></thead>
+          <thead><tr><th>Session</th><th>Started</th><th class="num">Length</th><th class="num">Samples</th><th>Devices</th><th>Deleted</th></tr></thead>
           <tbody id="sessions"></tbody>
         </table>
       </div>
@@ -487,6 +487,8 @@ async function loadSessions(quiet) {
   try { data = await json('GET', '/sessions'); }
   catch (e) { if (!quiet) { $('sessions').innerHTML = ''; $('sessEmpty').textContent = e.message; $('sessEmpty').classList.remove('hidden'); } return; }
   const rows = data.sessions;
+  $('keep').textContent = [data.retention_days ? `kept ${data.retention_days} days` : 'kept forever',
+    data.size_mb != null ? `${data.size_mb} MB${data.max_mb ? ' of ' + data.max_mb : ''}` : ''].filter(Boolean).join(' · ');
   $('sessEmpty').textContent = 'Nothing recorded yet.';
   $('sessEmpty').classList.toggle('hidden', rows.length > 0);
   $('sessions').innerHTML = rows.map((s) => `<tr data-id="${esc(s.session)}" class="${s.session === selected ? 'sel' : ''}">
@@ -494,9 +496,18 @@ async function loadSessions(quiet) {
     <td>${day(s.first_ts)} ${clock(s.first_ts)}</td>
     <td class="num">${dur(s.duration_s)}</td>
     <td class="num">${s.samples.toLocaleString()}</td>
-    <td class="muted">${esc(s.devices.filter((d) => d !== 'operator').join(', '))}</td></tr>`).join('');
+    <td class="muted">${esc(s.devices.filter((d) => d !== 'operator').join(', '))}</td>
+    <td class="muted">${expiry(s)}</td></tr>`).join('');
   [...$('sessions').children].forEach((tr) => (tr.onclick = () => openDetail(tr.dataset.id)));
   if (selected && quiet) openDetail(selected, true);
+}
+
+// When retention will delete it: a date, or a countdown once it is close.
+function expiry(s) {
+  if (s.current) return 'recording';
+  if (!s.expires_ts) return s.session === '_none' ? 'rolling' : '—';
+  const days = (s.expires_ts - Date.now() / 1000) / 86400;
+  return days < 1 ? '<span style="color:var(--rec)">today</span>' : days < 7 ? `<span style="color:var(--warn)">in ${Math.ceil(days)} d</span>` : day(s.expires_ts);
 }
 
 async function openDetail(id, quiet) {
@@ -514,6 +525,7 @@ async function openDetail(id, quiet) {
         <h3 class="mono">${esc(s.session)}</h3>
         <div class="muted">${day(s.first_ts)} · ${clock(s.first_ts)} → ${clock(s.last_ts)} · ${dur(s.duration_s)} · ${s.samples.toLocaleString()} samples</div>
         ${s.meta?.note ? `<div style="margin-top:4px">${esc(s.meta.note)}</div>` : ''}
+        ${s.expires_ts ? `<div class="muted" style="margin-top:4px;font-size:12px">Deleted from the archive on ${day(s.expires_ts)}. Download it to keep it.</div>` : ''}
       </div>
       <div class="row">
         <button class="btn small" data-x="">CSV · all</button>

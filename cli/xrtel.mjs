@@ -179,17 +179,19 @@ const commands = {
   },
 
   async sessions() {
-    const { current, sessions } = await json('GET', '/sessions');
+    const { current, sessions, retention_days, size_mb, max_mb } = await json('GET', '/sessions');
     if (!sessions.length) return console.log('No sessions recorded yet.' + (current ? '' : ' Start one: xrtel start <name>'));
     const rows = sessions.map((s) => [
       (s.current ? '▶ ' : '  ') + s.session, `${day(s.first_ts)} ${clock(s.first_ts)}`, dur(s.duration_s),
-      String(s.samples), s.devices.filter((d) => d !== 'operator').join(', '),
+      String(s.samples), s.current ? 'recording' : s.expires_ts ? day(s.expires_ts) : '—',
+      s.devices.filter((d) => d !== 'operator').join(', '),
     ]);
-    const head = ['  session', 'started', 'length', 'samples', 'devices'];
+    const head = ['  session', 'started', 'length', 'samples', 'deleted', 'devices'];
     const w = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
     const fmt = (r) => r.map((c, i) => (i === 3 ? c.padStart(w[i]) : c.padEnd(w[i]))).join('  ');
     console.log(fmt(head)); rows.forEach((r) => console.log(fmt(r)));
-    if (sessions.some((s) => s.session === '_none')) console.log('\n_none = samples that arrived while no session was running.');
+    console.log(`\nArchive ${size_mb} MB${max_mb ? ` of ${max_mb}` : ''}; sessions kept ${retention_days ? retention_days + ' days after their last sample' : 'forever'}.`);
+    if (sessions.some((s) => s.session === '_none')) console.log('_none = samples that arrived while no session was running.');
   },
 
   async show() {
@@ -198,6 +200,7 @@ const commands = {
     const s = await json('GET', `/sessions/${encodeURIComponent(name)}`);
     console.log(`${s.session}  ${day(s.first_ts)} ${clock(s.first_ts)} → ${clock(s.last_ts)}  (${dur(s.duration_s)}, ${s.samples} samples)`);
     if (s.meta?.note) console.log(`note: ${s.meta.note}`);
+    if (s.expires_ts) console.log(`deleted from the archive on ${day(s.expires_ts)} — export it to keep it`);
     console.log('\n  device            signal            samples   rate');
     for (const r of s.streams.filter((r) => r.device !== 'operator'))
       console.log(`  ${r.device.padEnd(17)} ${r.signal.padEnd(17)} ${String(r.n).padStart(7)}   ${r.rate_hz != null ? r.rate_hz + ' Hz' : '—'}`);
