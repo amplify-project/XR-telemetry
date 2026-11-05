@@ -1,0 +1,10 @@
+{
+  "name": "@xr-telemetry/cli",
+  "version": "0.2.0",
+  "description": "xrtel: start/stop sessions, markers, live view and CSV export for an XR-telemetry gateway",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": { "xrtel": "xrtel.mjs" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "ws": "^8.22.1" }
+}

@@ -7,8 +7,8 @@ axis.
 
 Developed in the [AMPLIFY](https://github.com/amplify-project) project.
 
-> **Status: v0.1, working prototype.** Gateway, JavaScript SDK and examples run
-> end to end against Redis; the specification is still a draft.
+> **Status: v0.2, working prototype.** Gateway, archiver, JavaScript SDK and
+> the `xrtel` CLI run end to end against Redis; the specification is still a draft.
 
 ## The idea
 
@@ -31,7 +31,9 @@ XR-telemetry is a **convention over Redis**, plus a few small pieces:
   `screen`).
 - **Gateway** — WebSocket front for browsers/WebXR and for deployments where
   Redis must not be exposed; tokens and sessions.
-- **Archiver** — durable storage for analysis and datasets.
+- **Archiver** — every session kept in SQLite, exported as CSV/NDJSON.
+- **`xrtel` CLI** — start and stop a test when you choose, put markers on the
+  timeline, watch live, export. See [Running a test](docs/running-a-test.md).
 
 The AMPLIFY Physiological-Signals stack already follows the key space, so it
 interoperates with no change.
@@ -41,15 +43,22 @@ interoperates with no change.
 Needs Docker and Node ≥ 22.
 
 ```bash
-cd deploy && cp .env.example .env && docker compose up -d --build   # Redis (:6380) + gateway (:8090)
+cd deploy && cp .env.example .env && docker compose up -d --build   # Redis (:6380) + gateway (:8090) + archiver
 curl localhost:8090/health
 cd ../gateway && npm install && cd ..
-node tools/simulate.mjs --headsets 3 --physio 2 --redis redis://127.0.0.1:6380
+cd ../cli && npm install && cd ..
+node cli/xrtel.mjs login http://localhost:8090
+node cli/xrtel.mjs start first-test
+node tools/simulate.mjs --headsets 3 --physio 2 --redis redis://127.0.0.1:6380   # Ctrl+C after a while
+node cli/xrtel.mjs stop
+node cli/xrtel.mjs show first-test
+node cli/xrtel.mjs export first-test --signal pose
 ```
 
 Three simulated headsets publish poses and events through the gateway with the
 JS SDK; two simulated wearables write straight to Redis the way
-Physiological-Signals does. Then read everything, from any language:
+Physiological-Signals does; all of it lands in the session you started.
+Live, from any language, straight from Redis:
 
 ```bash
 python examples/python/consume.py --redis redis://127.0.0.1:6380                 # live
@@ -69,14 +78,16 @@ and mapped to spec `pose` samples.
 | Path | What |
 |---|---|
 | `docs/spec.md` | The specification |
-| `gateway/` | WebSocket ↔ Redis gateway (Node): tokens, sessions, reference clock, snapshot, presence |
+| `gateway/` | WebSocket ↔ Redis gateway (Node): tokens, sessions, reference clock, snapshot, presence, operator API — and the archiver (`bin/xrtel-archiver.js`), same image |
+| `cli/` | `xrtel`: start/stop/mark, watch, sessions, export |
 | `sdk/js/` | Browser / WebXR / Node SDK: `pose()`, `event()`, `send()` |
 | `tools/simulate.mjs` | Fake headsets (via gateway) and wearables (direct to Redis) |
 | `examples/python/` | Reading live and history straight from Redis |
-| `deploy/` | Docker Compose: Redis + gateway |
+| `deploy/` | Docker Compose: Redis + gateway + archiver |
 
 ## Documents
 
+- [`docs/running-a-test.md`](docs/running-a-test.md) — from headsets on to a CSV
 - [`docs/spec.md`](docs/spec.md) — the specification (draft v0.1)
 
 ## Roadmap
@@ -84,7 +95,7 @@ and mapped to spec `pose` samples.
 1. Specification (this draft) — review with the projects that will use it
 2. ✅ Gateway (from the Livestreamed Immersive Player relay) + Redis backend — prototype
 3. ✅ JavaScript/WebXR SDK — prototype
-4. Archiver (PostgreSQL/TimescaleDB, Parquet)
+4. ✅ Archiver (SQLite, CSV/NDJSON export) and `xrtel` CLI — prototype; PostgreSQL/TimescaleDB and Parquet next
 5. Python and Unity SDKs
 6. Evaluation: end-to-end latency, clock error, throughput, loss under disconnection
 

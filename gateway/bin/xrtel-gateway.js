@@ -16,6 +16,7 @@ const gw = createGateway({
   ingestToken:  env.INGEST_TOKEN || null,
   consumeToken: env.CONSUME_TOKEN || null,
   maxlen:       env.STREAM_MAXLEN ? +env.STREAM_MAXLEN : 20000,
+  archiverUrl:  env.ARCHIVER_URL || null,
   tls,
 });
 const stop = () => gw.close().then(() => process.exit(0));

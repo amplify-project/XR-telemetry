@@ -218,8 +218,17 @@ The gateway writes each sample to Redis per §3–§4, adding `srv_ts`,
 `srv_err_ms` and `session`, and answers `ping` probes every 2 s.
 
 **Consumer messages.** On connect a `snapshot` (latest sample of each live
-source, per signal), then `sample` and `leave` messages. *(open)* A `signals=`
-filter on the query string.
+source, per signal), then `sample` and `leave` messages. `signals=pose,event`
+on the query string filters by signal.
+
+**Operator API** (HTTP, `Authorization: Bearer <consume token>`):
+`GET /session`, `POST /session/start {id, meta}`, `POST /session/stop`,
+`POST /mark {name, value}`. Starting sets `session:current` (and
+`engagement:session_id`) and `session:{id}:meta.started`; stopping clears them
+and sets `ended`. Session boundaries and marks are written as `event` samples
+from the source `operator` (`name` = `session_start`, `session_stop` or the
+mark), so live consumers and the archive see them on the same timeline.
+`GET /sessions…` is proxied to the archiver (§9).
 
 **Keepalive.** WebSocket ping to consumers every 30 s, so that proxies
 (CloudFront, nginx) do not close an idle connection.
@@ -233,11 +242,21 @@ tokens, sessions, the reference clock and a base path.
 Redis holds the recent past (bounded streams). Durable storage is a consumer:
 
 **Archiver.** Reads `device:*:*` streams with consumer group `xrtel-archiver`,
-so a restart resumes where it stopped, and writes to:
+so a restart resumes where it stopped, and acknowledges a sample only after it
+is committed. A sample without a `session` field is filed under
+`session:current` at the time it is read, or `_none`.
 
-- **PostgreSQL / TimescaleDB**, one long table:
-  `(srv_ts, timestamp, session, participant, device, signal, fields jsonb)`,
-  hypertable on `srv_ts` *(open: wide tables per signal for heavy ones)*.
+Reference implementation: **SQLite**, one long table
+`(session, device, signal, ts, srv_ts, timestamp, stream_id, fields json)`,
+unique on `(device, signal, stream_id)` so a redelivery is harmless. `ts` is
+`srv_ts`, else `timestamp`, else the stream id time — a capture time more than
+an hour away from the arrival in Redis is not trusted. HTTP API:
+`GET /sessions`, `GET /sessions/{id}`, `GET /sessions/{id}/export?format=csv|ndjson&signal=&device=`.
+
+Next *(open)*:
+
+- **PostgreSQL / TimescaleDB**, same long table, hypertable on `ts`
+  *(open: wide tables per signal for heavy ones)*.
 - **Parquet** files, partitioned `session=/signal=/device=`, for datasets.
 
 ## 10. Security and privacy

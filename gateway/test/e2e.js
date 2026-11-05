@@ -12,10 +12,11 @@ const { execSync } = require('child_process');
 const Redis = require('ioredis');
 const { WebSocket } = require('ws');
 const { createGateway } = require('../src/gateway');
+const { createArchiver } = require('../src/archiver');
 
 const NS = 'xrtest';
 const IN = 'in-secret', OUT = 'out-secret';
-let failed = false, container = null, gw, redis;
+let failed = false, container = null, gw, ar, redis;
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const ok = (m) => console.log('  ✓ ' + m);
@@ -64,7 +65,10 @@ function client(url, skewMs = 0) {
   const stale = await redis.keys(`${NS}:*`);
   if (stale.length) await redis.del(...stale);
 
-  gw = createGateway({ redisUrl, namespace: NS, port: 0, ingestToken: IN, consumeToken: OUT, log: false });
+  ar = createArchiver({ redisUrl, namespace: NS, dbPath: ':memory:', port: 0, scanMs: 200, log: false });
+  await ar.ready;
+  gw = createGateway({ redisUrl, namespace: NS, port: 0, ingestToken: IN, consumeToken: OUT, log: false,
+                       archiverUrl: `http://127.0.0.1:${ar.server.address().port}` });
   await gw.ready;
   await wait(200);                                       // psubscribe settles
   const B = `ws://127.0.0.1:${gw.server.address().port}`;
@@ -146,6 +150,41 @@ function client(url, skewMs = 0) {
   const ids = (snap?.samples || []).map((s) => `${s.device}/${s.signal}`).sort();
   check(ids.includes('quest-07/pose') && ids.includes('MD-V5-0000334/physio_metrics'), 'late consumer gets a snapshot of the latest samples', ids);
 
+  // ── operator sessions, marks, archive, export ──
+  const H = `http://127.0.0.1:${gw.server.address().port}`;
+  const call = (method, p, body, token = OUT) => fetch(H + p, { method,
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined });
+  check((await call('GET', '/sessions', null, null)).status === 401 && (await call('POST', '/session/start', { id: 'x' }, IN)).status === 401,
+        'API needs the consume token (not the ingest one)');
+  const started = await (await call('POST', '/session/start', { id: 'pilot-x', meta: { note: 'two headsets' } })).json();
+  check(started.current === 'pilot-x' && started.meta.note === 'two headsets' && !!started.meta.started, 'operator starts a session when they choose', started);
+  player.send(JSON.stringify({ b: [{ t: player.now(), w: Date.now(), mt: 13, p: [0.5, 1.6, 0], q: [0, 0, 0, 1] }] }));     // no session of its own
+  const physio2 = { device: 'MD-V5-0000334', timestamp: Date.now() / 1000, hr: 80 };                         // nor this one
+  await redis.xadd(`${NS}:device:MD-V5-0000334:physio_metrics`, '*', 'device', physio2.device, 'timestamp', physio2.timestamp, 'hr', 80);
+  await wait(100);
+  const mk = await call('POST', '/mark', { name: 'song-2', value: 'SAX' });
+  check(mk.status === 200, 'mark accepted');
+  await wait(1500);                                      // archiver: discover + read
+  const list = await (await call('GET', '/sessions')).json();
+  const px = list.sessions.find((x) => x.session === 'pilot-x');
+  check(list.current === 'pilot-x' && px && px.devices.includes('lip-player') && px.devices.includes('MD-V5-0000334'),
+        'archived: headset and direct-to-Redis wearable both filed under the operator session', px);
+  check(!!list.sessions.find((x) => x.session === 'rehearsal-a'), 'archived: a session named by the producer is kept apart');
+  const detail = await (await call('GET', '/sessions/pilot-x')).json();
+  check(detail.marks.map((m) => m.name).join() === 'session_start,song-2' && detail.meta?.note === 'two headsets',
+        'session detail lists the marks and the note', detail.marks);
+  const csv = await (await call('GET', '/sessions/pilot-x/export?signal=pose')).text();
+  const [head, ...rows] = csv.trim().split('\n');
+  check(head.startsWith('ts,signal,device,session') && head.includes('px') && head.includes('media_t') && rows.length === 1 && rows[0].includes('lip-player'),
+        'CSV export of one signal', csv.slice(0, 300));
+  const nd = (await (await call('GET', '/sessions/pilot-x/export?format=ndjson')).text()).trim().split('\n').map(JSON.parse);
+  check(nd.some((r) => r.signal === 'physio_metrics' && r.hr === 80) && nd.some((r) => r.name === 'song-2'), 'NDJSON export of everything, numbers as numbers');
+  check((await call('GET', '/sessions/nope/export')).status === 404, 'export of an unknown session → 404');
+  const stopped = await (await call('POST', '/session/stop')).json();
+  const now = await (await call('GET', '/session')).json();
+  check(stopped.stopped === 'pilot-x' && !!stopped.meta.ended && now.current === null, 'operator stops the session', stopped);
+
   // ── leave ──
   quest.close();
   await wait(150);
@@ -164,6 +203,7 @@ async function finish() {
   try { const k = await redis.keys(`${NS}:*`); if (k.length) await redis.del(...k); } catch {}
   try { redis.disconnect(); } catch {}
   try { await gw?.close(); } catch {}
+  try { await ar?.close(); } catch {}
   if (container) execSync(`docker rm -f ${container} >/dev/null 2>&1 || true`);
   console.log(failed ? '\nE2E FAILED' : '\nE2E PASSED');
   process.exit(failed ? 1 : 0);

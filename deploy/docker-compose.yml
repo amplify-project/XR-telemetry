@@ -1,7 +1,10 @@
-# Redis + gateway, for trying XR-telemetry locally or running it on one host.
+# Redis + gateway + archiver, for trying XR-telemetry locally or running it on one host.
 #
 #   cd deploy && cp .env.example .env && docker compose up -d --build
 #   curl localhost:8090/health
+#
+# The archiver keeps every session in SQLite (volume archive_data); the gateway
+# serves it at /sessions… with the consume token. Redis alone keeps ~16 min.
 #
 # Already have a Redis (e.g. the Physiological-Signals hub)? Run only the
 # gateway against it:   REDIS_URL=redis://<hub>:6379 docker compose up -d gateway
@@ -22,7 +25,21 @@ services:
       INGEST_TOKEN: ${INGEST_TOKEN:-}
       CONSUME_TOKEN: ${CONSUME_TOKEN:-}
       BASE_PATH: ${BASE_PATH:-}
+      ARCHIVER_URL: http://archiver:8091
     ports: ["${GATEWAY_BIND:-127.0.0.1}:${GATEWAY_PORT:-8090}:8090"]
+
+  archiver:
+    build: ../gateway
+    restart: unless-stopped
+    command: ["node", "bin/xrtel-archiver.js"]
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      XRTEL_NAMESPACE: ${XRTEL_NAMESPACE:-}
+      ARCHIVE_DB: /data/xrtel.sqlite
+      PORT: "8091"
+    volumes: [archive_data:/data]
+    # No ports: only the gateway talks to it, on the compose network.
 
 volumes:
   redis_data:
+  archive_data:

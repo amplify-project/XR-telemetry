@@ -39,12 +39,13 @@ const RESERVED = new Set(['meta', 'alive', 'participant']);
  * @param {number}  [opt.snapshotTtlMs=10000] samples older than this are left out of snapshots
  * @param {?{key, cert}} [opt.tls=null]  serve https/wss itself (LAN with a self-signed cert;
  *                                       behind a proxy or CloudFront leave it null)
+ * @param {?string} [opt.archiverUrl=null] where /sessions… is proxied to (the archiver's HTTP API)
  * @param {boolean} [opt.log=true]
  */
 function createGateway({
   redisUrl = 'redis://127.0.0.1:6379', namespace = '', server: hostServer = null, port = 8090,
   basePath = '', ingestToken = null, consumeToken = null, maxlen = 20000, aliveTtlS = 5,
-  pingMs = 2000, keepAliveMs = 30000, snapshotTtlMs = 10000, tls = null, log = true,
+  pingMs = 2000, keepAliveMs = 30000, snapshotTtlMs = 10000, tls = null, archiverUrl = null, log = true,
 } = {}) {
   const ns = namespace ? `${namespace.replace(/:+$/, '')}:` : '';
   const base = (basePath || '').replace(/\/+$/, '');
@@ -98,22 +99,116 @@ function createGateway({
     return v;
   }
 
+  // Operator control (spec §3.2): the session is named by whoever runs the
+  // test, at the moment they choose, and everything that arrives without a
+  // session of its own — headsets, wearables writing to Redis — is filed under it.
+  async function startSession(id, extra = {}) {
+    const now = new Date().toISOString();
+    const meta = {};
+    for (const [k, v] of Object.entries(extra || {})) if (v != null && typeof v !== 'object') meta[k] = String(v);
+    const p = redis.pipeline()
+      .set(`${ns}session:current`, id).set(`${ns}engagement:session_id`, id)
+      .hsetnx(`${ns}session:${id}:meta`, 'started', now)
+      .hdel(`${ns}session:${id}:meta`, 'ended');
+    if (Object.keys(meta).length) p.hset(`${ns}session:${id}:meta`, meta);
+    await p.exec();
+    sessionCache = { at: Date.now(), value: id };
+    await operatorEvent(id, 'session_start');
+    return { current: id, meta: await redis.hgetall(`${ns}session:${id}:meta`) };
+  }
+  async function stopSession() {
+    const id = await currentSession();
+    if (!id) return { current: null, stopped: null };
+    await operatorEvent(id, 'session_stop');
+    await redis.pipeline()
+      .del(`${ns}session:current`).del(`${ns}engagement:session_id`)
+      .hset(`${ns}session:${id}:meta`, 'ended', new Date().toISOString()).exec();
+    sessionCache = { at: Date.now(), value: null };
+    return { current: null, stopped: id, meta: await redis.hgetall(`${ns}session:${id}:meta`) };
+  }
+  // Marks and session boundaries are ordinary `event` samples from a source
+  // called `operator`: live consumers see them and the archiver files them.
+  async function operatorEvent(session, name, value) {
+    const now = Date.now() / 1000;
+    const sample = { device: 'operator', timestamp: now, srv_ts: now, srv_err_ms: 0, session, name };
+    if (value !== undefined && value !== null) sample.value = value;
+    const key = signalKey(ns, 'operator', 'event');
+    await redis.pipeline().publish(key, JSON.stringify(sample))
+      .xadd(key, 'MAXLEN', '~', maxlen, '*', ...toStreamFields(sample)).exec();
+    return sample;
+  }
+
   // ── HTTP + upgrade ────────────────────────────────────────────────────
   const health = () => ({
     ok: redis.status === 'ready' && sub.status === 'ready',
     redis: redis.status, producers, consumers: consumers.size, namespace: ns.replace(/:$/, '') || null,
     auth: { ingest: !!tokens['/ingest'], consume: !!tokens['/consume'] },
+    archive: !!archiverUrl,
   });
   const handler = (req, res) => {
-    if ((req.url || '').split('?')[0] === base + '/health') {
-      const h = health();
-      res.writeHead(h.ok ? 200 : 503, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify(h));
-    }
-    // Say where we are: an empty 404 behind a proxy looks like "nothing there".
-    res.writeHead(404, { 'content-type': 'text/plain' });
-    res.end(`xr-telemetry gateway: not found. Serving ${base || '/'} — try ${base}/health\n`);
+    route(req, res).catch((e) => {
+      say('http:', e.message);
+      if (!res.headersSent) reply(res, 500, { error: e.message }); else res.end();
+    });
   };
+  async function route(req, res) {
+    const url = new URL(req.url || '/', 'http://gateway');
+    // Dashboards in a browser call the API from another origin; auth is a bearer token, not a cookie.
+    res.setHeader('access-control-allow-origin', '*');
+    res.setHeader('access-control-allow-headers', 'authorization, content-type');
+    res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
+    const inBase = !base || url.pathname === base || url.pathname.startsWith(base + '/');
+    const p = inBase ? url.pathname.slice(base.length) : null;
+    if (p === '/health') { const h = health(); return reply(res, h.ok ? 200 : 503, h); }
+    const api = p === '/session' || p === '/session/start' || p === '/session/stop' || p === '/mark' ||
+      p === '/sessions' || (p && p.startsWith('/sessions/'));
+    if (!api) {
+      // Say where we are: an empty 404 behind a proxy looks like "nothing there".
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      return res.end(`xr-telemetry gateway: not found. Serving ${base || '/'} — try ${base}/health\n`);
+    }
+    if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+    const want = tokens['/consume'];
+    const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
+    if (want && !sameSecret(bearer || url.searchParams.get('token'), want)) return reply(res, 401, { error: 'consume token required' });
+
+    if (p === '/session' && req.method === 'GET') {
+      const id = await currentSession();
+      return reply(res, 200, { current: id, meta: id ? await redis.hgetall(`${ns}session:${id}:meta`) : null });
+    }
+    if (p === '/session/start' && req.method === 'POST') {
+      const body = await readJson(req);
+      const id = String(body.id ?? body.session ?? '');
+      if (!NAME_RE.test(id)) return reply(res, 400, { error: 'id must match [A-Za-z0-9_.-]{1,64}' });
+      return reply(res, 200, await startSession(id, body.meta));
+    }
+    if (p === '/session/stop' && req.method === 'POST') return reply(res, 200, await stopSession());
+    if (p === '/mark' && req.method === 'POST') {
+      const body = await readJson(req);
+      const name = String(body.name ?? '');
+      if (!name || name.length > 128) return reply(res, 400, { error: 'name required' });
+      const session = body.session ? String(body.session) : await currentSession();
+      if (!session || !NAME_RE.test(session)) return reply(res, 409, { error: 'no session running: start one first' });
+      return reply(res, 200, await operatorEvent(session, name, body.value));
+    }
+    if (p.startsWith('/sessions') && req.method === 'GET') return proxyToArchiver(req, res, p, url.searchParams);
+    return reply(res, 405, { error: 'method not allowed' });
+  }
+
+  function proxyToArchiver(req, res, path, params) {
+    if (!archiverUrl) return reply(res, 503, { error: 'no archiver configured (ARCHIVER_URL)' });
+    const q = new URLSearchParams();
+    for (const k of ['format', 'signal', 'device']) if (params.get(k)) q.set(k, params.get(k));   // never the token
+    const target = new URL(path + (q.size ? '?' + q : ''), archiverUrl);
+    const up = http.request(target, { method: 'GET' }, (r) => {
+      const h = {};
+      for (const k of ['content-type', 'content-disposition']) if (r.headers[k]) h[k] = r.headers[k];
+      res.writeHead(r.statusCode, h);
+      r.pipe(res);
+    });
+    up.on('error', () => { if (!res.headersSent) reply(res, 502, { error: 'archiver unreachable' }); else res.end(); });
+    up.end();
+  }
   const attached = !!hostServer;
   const server = hostServer || (tls ? https.createServer(tls, handler) : http.createServer(handler));
   const scheme = hostServer ? (typeof server.setSecureContext === 'function' ? 'wss' : 'ws') : (tls ? 'wss' : 'ws');
@@ -230,7 +325,7 @@ function createGateway({
     if (attached) return done();
     server.listen(port, () => {
       const auth = ['ingest', 'consume'].map((k) => `${k}=${tokens['/' + k] ? 'token' : 'open'}`).join(' ');
-      say(`listening on ${scheme}://0.0.0.0:${server.address().port}${base}  /ingest /consume /health  redis=${redisUrl}  ns=${ns || '(none)'}  auth: ${auth}`);
+      say(`listening on ${scheme}://0.0.0.0:${server.address().port}${base}  /ingest /consume /health /session /mark /sessions  archive=${archiverUrl || 'none'}  redis=${redisUrl}  ns=${ns || '(none)'}  auth: ${auth}`);
       done();
     });
   });
@@ -249,6 +344,22 @@ function createGateway({
 
 // ── helpers ─────────────────────────────────────────────────────────────
 function send(ws, data) { if (ws.readyState === 1) ws.send(data); }
+function reply(res, code, body) {
+  res.writeHead(code, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
+function readJson(req, limit = 16384) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', (c) => { size += c.length; if (size > limit) { reject(new Error('body too large')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => {
+      if (!size) return resolve({});
+      try { const v = JSON.parse(Buffer.concat(chunks).toString('utf8')); resolve(v && typeof v === 'object' ? v : {}); }
+      catch { resolve({}); }
+    });
+    req.on('error', reject);
+  });
+}
 function dropNull(o) { const r = {}; for (const k in o) if (o[k] !== null && o[k] !== undefined) r[k] = o[k]; return r; }
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function refuse(socket, code, text) {

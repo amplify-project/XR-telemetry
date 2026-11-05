@@ -1,7 +1,8 @@
 // Fake producers, to try the whole chain without a headset or a wristband.
 //
 //   node tools/simulate.mjs                         # 3 headsets → ws://127.0.0.1:8090/ingest
-//   node tools/simulate.mjs --headsets 5 --physio 2 --session pilot-3
+//   node tools/simulate.mjs --headsets 5 --physio 2               # into the session started with `xrtel start`
+//   node tools/simulate.mjs --session pilot-3                       # or a session of their own
 //   node tools/simulate.mjs --url wss://host/ingest --token … --headsets 2
 //
 // Headsets go through the gateway with the JS SDK (pose at 20 Hz, an event now
@@ -14,9 +15,9 @@ import { XRTelemetry } from '../sdk/js/xr-telemetry.js';
 const args = Object.fromEntries(process.argv.slice(2).join(' ').split('--').filter(Boolean)
   .map((a) => { const [k, ...v] = a.trim().split(/\s+/); return [k, v.join(' ') || true]; }));
 const N = +(args.headsets ?? 3), P = +(args.physio ?? 0);
-const session = args.session || 'sim';
+const session = typeof args.session === 'string' ? args.session : null;   // none: the operator's session
 let url = args.url || 'ws://127.0.0.1:8090/ingest';
-const q = new URLSearchParams({ session, ...(args.token ? { token: args.token } : {}) });
+const q = new URLSearchParams({ ...(session ? { session } : {}), ...(args.token ? { token: args.token } : {}) });
 url += (url.includes('?') ? '&' : '?') + q;
 
 const headsets = [];

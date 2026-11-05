@@ -1,18 +1,24 @@
 {
   "name": "@xr-telemetry/gateway",
-  "version": "0.1.0",
-  "description": "WebSocket gateway for XR-telemetry: browsers and WebXR in, Redis (device:{src}:{signal}) out",
+  "version": "0.2.0",
+  "description": "XR-telemetry server: WebSocket gateway (browsers/WebXR in, Redis out) and archiver (Redis streams to SQLite, CSV export)",
   "license": "Apache-2.0",
   "type": "commonjs",
   "main": "src/gateway.js",
-  "bin": { "xrtel-gateway": "bin/xrtel-gateway.js" },
+  "bin": {
+    "xrtel-gateway": "bin/xrtel-gateway.js",
+    "xrtel-archiver": "bin/xrtel-archiver.js"
+  },
   "scripts": {
     "start": "node bin/xrtel-gateway.js",
-    "test": "node test/e2e.js"
+    "test": "node test/e2e.js",
+    "archiver": "node bin/xrtel-archiver.js"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "dependencies": {
     "ioredis": "^5.11.1",
-    "ws": "^8.18.0"
+    "ws": "^8.22.1"
   }
 }
