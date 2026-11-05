@@ -3,6 +3,7 @@
     pip install redis
     python consume.py                                  # live: every signal of every device
     python consume.py --signal pose                    # only poses
+    python consume.py --signal pose --full             # every field, not a summary
     python consume.py --replay pose --count 5          # history: last samples from the streams
 
 This is all a Python service needs to fuse headset poses with the wearables'
@@ -19,6 +20,7 @@ ap.add_argument("--namespace", default="")
 ap.add_argument("--signal", default="*")
 ap.add_argument("--replay", metavar="SIGNAL", help="print the last --count samples of each stream of SIGNAL and exit")
 ap.add_argument("--count", type=int, default=3)
+ap.add_argument("--full", action="store_true", help="print every field of each sample, not a summary")
 args = ap.parse_args()
 
 r = redis.Redis.from_url(args.redis, decode_responses=True)
@@ -40,8 +42,12 @@ for msg in p.listen():
         continue
     _, src, signal = msg["channel"].rsplit(":", 2)
     data = json.loads(msg["data"])
-    if signal == "pose":
+    if args.full:
+        print(f"{src:>16} {signal:<14} {data}")
+    elif signal == "pose":
         print(f"{src:>16} pose   p=({data['px']:+.2f},{data['py']:+.2f},{data['pz']:+.2f})  "
-              f"srv_ts={data.get('srv_ts')}  ±{data.get('srv_err_ms')} ms  session={data.get('session')}")
+              f"q=({data['qx']:+.2f},{data['qy']:+.2f},{data['qz']:+.2f},{data['qw']:+.2f})  "
+              f"z={data.get('z', '-')} f={data.get('f', '-')} media_t={data.get('media_t', '-')}  "
+              f"srv_ts={data.get('srv_ts')} ±{data.get('srv_err_ms')} ms  {data.get('frame')}  session={data.get('session')}")
     else:
         print(f"{src:>16} {signal:<14} {data}")
