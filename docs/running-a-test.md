@@ -70,16 +70,28 @@ xrtel export pilot-03 --format ndjson         # one JSON object per line, nested
 ```
 
 `xrtel show` is the first thing to look at after a test: a headset missing
-from the list, or a rate well below 20 Hz for `pose`, is visible there before
-anyone opens a spreadsheet.
+from the list, a rate well below 20 Hz for `pose`, or a wearable whose clock is
+off is visible there before anyone opens a spreadsheet:
+
+```
+  clocks            status
+  MD-V5-0000334     off      own clock AHEAD by 1.75 s — t_ref corrects -1.75 s
+  MD-V5-0000351     ok       own clock, in step (arrives 68 ms after its timestamp)
+  quest-07          ok       reference clock ±0.5 ms
+```
+
+Headsets are on the reference clock. Wearables writing to Redis directly are
+checked against their arrival time: `t_ref` in the export corrects them. See
+[Architecture → Time](architecture.md#time).
 
 ### The CSV
 
-One row per sample, sorted by `ts`, columns:
+One row per sample, sorted by `t_ref`, columns:
 
 | Column | Meaning |
 |---|---|
-| `ts` | Best capture time available, Unix seconds: `srv_ts`, else `timestamp`, else arrival in Redis |
+| `t_ref` | **Use this one to align signals.** Unix seconds on the reference clock: `srv_ts`, else the device's `timestamp` corrected by its clock check, else arrival in Redis |
+| `ts` | Capture time as stored, without the correction |
 | `signal`, `device`, `session`, `participant` | What and who |
 | `srv_ts`, `srv_err_ms` | Reference-clock time and its error bound (spec §6) |
 | `timestamp` | The producer's own wall clock |

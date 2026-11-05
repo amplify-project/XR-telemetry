@@ -207,6 +207,19 @@ const commands = {
     console.log('\n  device            signal            samples   rate');
     for (const r of s.streams.filter((r) => r.device !== 'operator'))
       console.log(`  ${r.device.padEnd(17)} ${r.signal.padEnd(17)} ${String(r.n).padStart(7)}   ${r.rate_hz != null ? r.rate_hz + ' Hz' : '—'}`);
+    if (s.clocks?.length) {
+      const sec = (v) => (v == null ? '—' : `${v >= 0 ? '+' : '-'}${Math.abs(v) < 1 ? Math.round(Math.abs(v) * 1000) + ' ms' : Math.abs(v).toFixed(2) + ' s'}`);
+      console.log('\n  clocks            status   ');
+      for (const c of s.clocks) {
+        const txt = c.clock === 'reference' ? `reference clock ±${c.err_ms} ms`
+          : c.offset_s == null ? 'no timestamp: arrival time used'
+          : c.offset_s < -0.05 ? `own clock AHEAD by ${sec(-c.offset_s).slice(1)}`
+          : c.offset_s < 0.25 ? `own clock, in step (arrives ${sec(c.offset_s).slice(1)} after its timestamp)`
+          : `timestamps ${sec(c.offset_s).slice(1)} behind arrival: clock behind or delivery delay`;
+        const fix = c.applied ? ` — t_ref corrects ${sec(c.offset_s)}` : '';
+        console.log(`  ${c.device.padEnd(17)} ${c.status.padEnd(8)} ${txt}${fix}`);
+      }
+    }
     if (s.marks.length) {
       console.log('\n  marks');
       for (const m of s.marks) console.log(`  ${clock(m.ts, true)}  +${dur(m.ts - s.first_ts).padEnd(6)} ${m.name}${m.value !== undefined ? ' = ' + m.value : ''}`);

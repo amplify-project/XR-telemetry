@@ -118,8 +118,38 @@ gives the tightest bound; the sliding window follows oscillator drift. The
 end-to-end test checks that a producer whose clock is five hours off lands on
 the right `srv_ts`.
 
-Wearables that write to Redis directly have no `srv_ts` yet ([spec §12](spec.md#12-open-questions)).
-The archiver orders by the best time available (below).
+### Wearables writing to Redis directly
+
+They carry only `timestamp`, their machine's wall clock, which nobody keeps in
+step with the gateway. A PC clock off by seconds is common. Two remedies:
+
+- **The bridge** (`tools/bridge.mjs`, [partners](partners.md#physiological-signals-bridge))
+  turns them into gateway producers. Every sample gets `srv_ts`.
+- **The clock check**, done by the archiver for every device without `srv_ts`.
+  It needs nothing from the producer.
+
+```mermaid
+flowchart LR
+  d["per device and session:<br/>arrival in Redis − timestamp"] --> q["5th percentile<br/>(fastest deliveries)"]
+  q --> neg{"below −50 ms?"}
+  neg -- yes --> ahead["clock AHEAD, for certain:<br/>a sample cannot arrive<br/>before it was taken"]
+  neg -- no --> small{"below 250 ms?"}
+  small -- yes --> ok["in step: the difference is delivery delay"]
+  small -- no --> late["clock behind or slow delivery<br/>(indistinguishable)"]
+  ahead --> fix["t_ref = timestamp + correction"]
+  late --> fix
+  ok --> keep["t_ref = timestamp"]
+```
+
+Arrival is the Redis server's clock, which is the reference clock when Redis
+and the gateway run on one host, as in the reference deployment. The check is
+shown per session in the console and in `xrtel show`, with a status of `ok`,
+`check` or `off`. The export's `t_ref` column applies the correction, so
+samples from different machines interleave correctly.
+
+The correction is good to about the fastest delivery from the device to Redis:
+tens of milliseconds on a LAN. That is far below the physiological latencies it
+is used to align: EDA responds 1–3 s after a stimulus.
 
 ## Sessions
 
@@ -177,7 +207,7 @@ flowchart TD
   start([start / restart]) --> pend["XREADGROUP … 0<br/>pending: delivered, never acked"]
   pend --> read["XREADGROUP … > BLOCK 1 s<br/>up to 1000 entries"]
   read --> sess["session: own · else session:current · else _none"]
-  sess --> ts["ts: srv_ts · else timestamp · else stream-id time<br/>(ignored if > 1 h from arrival)"]
+  sess --> ts["ts: srv_ts · else timestamp · else stream-id time<br/>(ignored if more than 1 h from arrival)"]
   ts --> ins["INSERT OR IGNORE<br/>unique (device, signal, stream_id)"]
   ins --> commit[COMMIT]
   commit --> ack[XACK]

@@ -168,6 +168,11 @@ function client(url, skewMs = 0) {
   player.send(JSON.stringify({ b: [{ t: player.now(), w: Date.now(), mt: 13, p: [0.5, 1.6, 0], q: [0, 0, 0, 1] }] }));     // no session of its own
   const physio2 = { device: 'MD-V5-0000334', timestamp: Date.now() / 1000, hr: 80 };                         // nor this one
   await redis.xadd(`${NS}:device:MD-V5-0000334:physio_metrics`, '*', 'device', physio2.device, 'timestamp', physio2.timestamp, 'hr', 80);
+  // A wearable whose PC clock runs 2.5 s ahead, writing straight to Redis.
+  for (let i = 0; i < 5; i++) {
+    await redis.xadd(`${NS}:device:MD-SKEW:physio_metrics`, '*', 'device', 'MD-SKEW', 'timestamp', Date.now() / 1000 + 2.5, 'hr', 60 + i);
+    await wait(40);
+  }
   await wait(100);
   const mk = await call('POST', '/mark', { name: 'song-2', value: 'SAX' });
   check(mk.status === 200, 'mark accepted');
@@ -180,9 +185,15 @@ function client(url, skewMs = 0) {
   const detail = await (await call('GET', '/sessions/pilot-x')).json();
   check(detail.marks.map((m) => m.name).join() === 'session_start,song-2' && detail.meta?.note === 'two headsets',
         'session detail lists the marks and the note', detail.marks);
+  const clocks = Object.fromEntries(detail.clocks.map((c) => [c.device, c]));
+  check(clocks['MD-SKEW']?.status === 'off' && Math.abs(clocks['MD-SKEW'].offset_s + 2.5) < 0.1 &&
+        clocks['MD-V5-0000334']?.status === 'ok' && clocks['lip-player']?.clock === 'reference',
+        'clock check: a wearable 2.5 s ahead is flagged, an accurate one is ok, headsets are on the reference clock', detail.clocks);
+  const skewRow = (await (await call('GET', '/sessions/pilot-x/export?format=ndjson&device=MD-SKEW')).text()).trim().split('\n').map(JSON.parse)[0];
+  check(Math.abs(skewRow.t_ref - (skewRow.timestamp - 2.5)) < 0.1, 'export t_ref corrects that wearable onto the reference clock', skewRow);
   const csv = await (await call('GET', '/sessions/pilot-x/export?signal=pose')).text();
   const [head, ...rows] = csv.trim().split('\n');
-  check(head.startsWith('ts,signal,device,session') && head.includes('px') && head.includes('media_t') && rows.length === 1 && rows[0].includes('lip-player'),
+  check(head.startsWith('t_ref,ts,signal,device,session') && head.includes('px') && head.includes('media_t') && rows.length === 1 && rows[0].includes('lip-player'),
         'CSV export of one signal', csv.slice(0, 300));
   const nd = (await (await call('GET', '/sessions/pilot-x/export?format=ndjson')).text()).trim().split('\n').map(JSON.parse);
   check(nd.some((r) => r.signal === 'physio_metrics' && r.hr === 80) && nd.some((r) => r.name === 'song-2'), 'NDJSON export of everything, numbers as numbers');

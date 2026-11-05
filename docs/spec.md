@@ -182,9 +182,18 @@ asymmetric about, and the window lets the estimate follow oscillator drift.
 milliseconds. It is a common clock for free, but it stamps *arrival*, not
 capture (batched samples share it). Useful as a fallback and as a check.
 
-*(open)* Producers that write to Redis directly (no gateway) cannot get
-`srv_ts` today. Options: a small timing endpoint they probe, or estimating
-their offset from stream-id − `timestamp` over a window.
+**Producers that write to Redis directly** have no `srv_ts`. Two mechanisms,
+neither requiring a change in the producer:
+
+- a bridge that reads their Redis and republishes through a gateway, which
+  stamps `srv_ts` at the bridge;
+- the archiver's **clock check**, per device and session: the 5th percentile of
+  `stream-id time − timestamp` estimates the clock difference plus the fastest
+  delivery. A negative value is a clock ahead for certain; a positive value
+  below 250 ms is taken as delivery delay. Exports carry `t_ref`, the timestamp
+  corrected accordingly.
+
+*(open)* A timing endpoint that such producers could probe themselves.
 
 ## 7. Identity
 
@@ -292,7 +301,7 @@ project fields on `pose` or become `event`s *(open)*.
 ## 12. Open questions
 
 1. ~~Retire `engagement:session_id`?~~ Kept, owned by Physiological-Signals, read-only for XR-telemetry (§3.2).
-2. Reference clock for producers that write to Redis directly (§6).
+2. Reference clock for producers that write to Redis directly: bridge and clock check exist (§6); a probe endpoint is open.
 3. Per-signal JSON Schemas and whether the gateway validates.
 4. Archiver table shape for high-rate signals.
 5. Namespace by key prefix or by Redis database number.

@@ -20,9 +20,11 @@ const RESERVED = new Set(['meta', 'alive', 'participant']);
 // Fields kept as text even when they look numeric (ids, names).
 const TEXT_FIELDS = new Set(['device', 'session', 'participant', 'name', 'frame', 'gaze_src', 'input', 'rec']);
 // Leading CSV columns, in this order when present; the rest follow alphabetically.
-const LEAD = ['ts', 'signal', 'device', 'session', 'participant', 'srv_ts', 'srv_err_ms', 'timestamp',
+const LEAD = ['t_ref', 'ts', 'signal', 'device', 'session', 'participant', 'srv_ts', 'srv_err_ms', 'timestamp',
   't_mono', 'seq', 'media_t', 'name', 'value'];
 const NO_SESSION = '_none';
+// Arrival in Redis, from the stream id (the Redis server's clock, ms).
+const ARRIVAL = "(CAST(substr(stream_id, 1, instr(stream_id, '-') - 1) AS REAL) / 1000.0)";
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
 /**
@@ -257,7 +259,54 @@ function createArchiver({
       samples: streamsRows.reduce((a, r) => a + r.n, 0),
       streams: streamsRows.map((r) => ({ ...r, rate_hz: r.last_ts > r.first_ts ? round((r.n - 1) / (r.last_ts - r.first_ts), 1) : null })),
       marks,
+      clocks: clockCheck(id),
     };
+  }
+
+  // ── clock check ───────────────────────────────────────────────────────
+  // Samples through a gateway carry srv_ts, on the reference clock with a
+  // measured bound. Samples written to Redis directly (wearables) carry only
+  // their machine's wall clock. For those, arrival − timestamp = delivery
+  // latency (≥ 0) + clock difference; the low tail (5th percentile) is where
+  // latency was smallest, so it estimates the clock difference best — the same
+  // idea as the min-RTT filter of the gateway. Arrival is the Redis server's
+  // clock, which is the reference clock when Redis and the gateway share a host.
+  function clockCheck(id) {
+    const out = [];
+    const devs = db.prepare(`SELECT device, count(*) AS n, sum(srv_ts IS NOT NULL) AS nref FROM samples
+                             WHERE session = ? AND device != 'operator' GROUP BY device ORDER BY device`).all(id);
+    for (const d of devs) {
+      const c = { device: d.device, n: d.n, clock: d.nref === d.n ? 'reference' : d.nref ? 'mixed' : 'device' };
+      if (d.nref) {
+        const rows = db.prepare(`SELECT json_extract(fields, '$.srv_err_ms') AS e, timestamp - srv_ts AS w FROM samples
+                                 WHERE session = ? AND device = ? AND srv_ts IS NOT NULL ORDER BY ts LIMIT 20000`).all(id, d.device);
+        c.err_ms = round(quantile(rows.map((r) => r.e).filter((v) => v != null), 0.5) ?? 0, 1);
+        c.wall_offset_s = round(quantile(rows.map((r) => r.w).filter((v) => v != null), 0.5) ?? 0, 3);   // informative
+      }
+      if (d.nref < d.n) {
+        const deltas = db.prepare(`SELECT ${ARRIVAL} - timestamp AS dl FROM samples
+                                   WHERE session = ? AND device = ? AND srv_ts IS NULL AND timestamp IS NOT NULL ORDER BY ts LIMIT 20000`)
+          .all(id, d.device).map((r) => r.dl);
+        if (deltas.length) {
+          const p5 = quantile(deltas, 0.05), p50 = quantile(deltas, 0.5), p95 = quantile(deltas, 0.95);
+          c.offset_s = round(p5, 3);              // add to timestamp to get the reference clock
+          c.latency_s = round(p50 - p5, 3);       // typical delivery delay beyond the fastest one
+          c.spread_s = round(p95 - p5, 3);
+        }
+      }
+      // A sample cannot arrive before it was taken: a negative offset is the
+      // device's clock running ahead, for certain. A positive one is delivery
+      // delay or a clock behind, indistinguishable from here — small ones are
+      // taken as delay and left alone.
+      const o = c.offset_s;
+      if (c.clock === 'reference') c.status = 'ok';
+      else if (o == null) c.status = 'unknown';
+      else if (o < -0.05) c.status = o < -1 ? 'off' : 'check';
+      else c.status = o < 0.25 ? 'ok' : o < 1 ? 'check' : 'off';
+      c.applied = o != null && (o < -0.05 || o >= 0.25);   // whether t_ref uses the correction
+      out.push(c);
+    }
+    return out;
   }
 
   async function sessionMeta(id) {
@@ -265,28 +314,39 @@ function createArchiver({
     catch { return {}; }
   }
 
-  /** Writes the export to `out` (a writable) row by row; returns false if the session has nothing. */
+  /**
+   * Writes the export to `out` (a writable) row by row; returns false if the session has nothing.
+   * Every row gets t_ref: the sample on the reference clock — srv_ts, else the device's
+   * timestamp (corrected when its clock check says so), else its arrival in Redis — and rows are
+   * sorted by it, so signals from different machines interleave correctly.
+   */
   function exportTo(out, id, { format = 'csv', signal = null, device = null } = {}) {
-    let sql = 'SELECT ts, signal, fields FROM samples WHERE session = ?';
-    const args = [id];
+    const offsets = new Map(clockCheck(id).filter((c) => c.applied).map((c) => [c.device, c.offset_s]));
+    const caseSql = offsets.size ? `CASE device ${[...offsets].map(() => 'WHEN ? THEN ?').join(' ')} END` : 'NULL';
+    const caseArgs = [...offsets].flat();
+    const tRef = `COALESCE(srv_ts, timestamp + ${caseSql}, ${ARRIVAL})`;
+    let sql = `SELECT ts, signal, fields, ${tRef} AS t_ref FROM samples WHERE session = ?`;
+    const args = [...caseArgs, id];
     if (signal) { sql += ' AND signal = ?'; args.push(signal); }
     if (device) { sql += ' AND device = ?'; args.push(device); }
-    sql += ' ORDER BY ts';
+    sql += ` ORDER BY ${tRef}`;
+    args.push(...caseArgs);
     const stmt = db.prepare(sql);
+    const row = (r) => ({ t_ref: round(r.t_ref, 4), ts: r.ts, signal: r.signal, ...JSON.parse(r.fields) });
     if (format === 'ndjson') {
       let n = 0;
-      for (const r of stmt.iterate(...args)) { out.write(JSON.stringify({ ts: r.ts, signal: r.signal, ...JSON.parse(r.fields) }) + '\n'); n++; }
+      for (const r of stmt.iterate(...args)) { out.write(JSON.stringify(row(r)) + '\n'); n++; }
       return n > 0;
     }
     // CSV: one pass for the union of columns (signals differ), one to write.
     const cols = new Set();
     for (const r of stmt.iterate(...args)) for (const k of Object.keys(JSON.parse(r.fields))) cols.add(k);
     if (!cols.size) return false;
-    const header = [...LEAD.filter((c) => c === 'ts' || c === 'signal' || cols.has(c)),
+    const header = [...LEAD.filter((c) => c === 't_ref' || c === 'ts' || c === 'signal' || cols.has(c)),
       ...[...cols].filter((c) => !LEAD.includes(c)).sort()];
     out.write(header.join(',') + '\n');
     for (const r of stmt.iterate(...args)) {
-      const f = { ts: r.ts, signal: r.signal, ...JSON.parse(r.fields) };
+      const f = row(r);
       out.write(header.map((c) => csvCell(f[c])).join(',') + '\n');
     }
     return true;
@@ -358,6 +418,12 @@ function parseFields(flat) {
     f[k] = !TEXT_FIELDS.has(k) && /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(v) ? Number(v) : v;
   }
   return f;
+}
+function quantile(xs, q) {
+  if (!xs.length) return null;
+  const a = [...xs].sort((x, y) => x - y);
+  const i = (a.length - 1) * q, lo = Math.floor(i), hi = Math.ceil(i);
+  return a[lo] + (a[hi] - a[lo]) * (i - lo);
 }
 function num(v) { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : null; }
 function round(n, d) { const f = 10 ** d; return Math.round(n * f) / f; }
