@@ -12,6 +12,7 @@
 // short cache of the latest sample per (source, signal) for snapshots.
 
 const http = require('http');
+const https = require('https');
 const crypto = require('crypto');
 const Redis = require('ioredis');
 const { WebSocketServer } = require('ws');
@@ -36,12 +37,14 @@ const RESERVED = new Set(['meta', 'alive', 'participant']);
  * @param {number}  [opt.pingMs=2000]        clock probe period per producer
  * @param {number}  [opt.keepAliveMs=30000]  WebSocket ping to consumers; 0 = off
  * @param {number}  [opt.snapshotTtlMs=10000] samples older than this are left out of snapshots
+ * @param {?{key, cert}} [opt.tls=null]  serve https/wss itself (LAN with a self-signed cert;
+ *                                       behind a proxy or CloudFront leave it null)
  * @param {boolean} [opt.log=true]
  */
 function createGateway({
   redisUrl = 'redis://127.0.0.1:6379', namespace = '', server: hostServer = null, port = 8090,
   basePath = '', ingestToken = null, consumeToken = null, maxlen = 20000, aliveTtlS = 5,
-  pingMs = 2000, keepAliveMs = 30000, snapshotTtlMs = 10000, log = true,
+  pingMs = 2000, keepAliveMs = 30000, snapshotTtlMs = 10000, tls = null, log = true,
 } = {}) {
   const ns = namespace ? `${namespace.replace(/:+$/, '')}:` : '';
   const base = (basePath || '').replace(/\/+$/, '');
@@ -110,7 +113,8 @@ function createGateway({
     res.writeHead(404); res.end();
   };
   const attached = !!hostServer;
-  const server = hostServer || http.createServer(handler);
+  const server = hostServer || (tls ? https.createServer(tls, handler) : http.createServer(handler));
+  const scheme = hostServer ? (typeof server.setSecureContext === 'function' ? 'wss' : 'ws') : (tls ? 'wss' : 'ws');
 
   const wss = new WebSocketServer({ noServer: true });
   const onUpgrade = (req, socket, head) => {
@@ -224,13 +228,13 @@ function createGateway({
     if (attached) return done();
     server.listen(port, () => {
       const auth = ['ingest', 'consume'].map((k) => `${k}=${tokens['/' + k] ? 'token' : 'open'}`).join(' ');
-      say(`listening on :${server.address().port}${base}  /ingest /consume /health  redis=${redisUrl}  ns=${ns || '(none)'}  auth: ${auth}`);
+      say(`listening on ${scheme}://0.0.0.0:${server.address().port}${base}  /ingest /consume /health  redis=${redisUrl}  ns=${ns || '(none)'}  auth: ${auth}`);
       done();
     });
   });
 
   return {
-    server, wss, redis, health, ready,
+    server, wss, redis, health, ready, scheme,
     async close() {
       clearInterval(keepAlive);
       server.removeListener('upgrade', onUpgrade);
