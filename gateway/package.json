@@ -1,0 +1,18 @@
+{
+  "name": "@xr-telemetry/gateway",
+  "version": "0.1.0",
+  "description": "WebSocket gateway for XR-telemetry: browsers and WebXR in, Redis (device:{src}:{signal}) out",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "main": "src/gateway.js",
+  "bin": { "xrtel-gateway": "bin/xrtel-gateway.js" },
+  "scripts": {
+    "start": "node bin/xrtel-gateway.js",
+    "test": "node test/e2e.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "ioredis": "^5.11.1",
+    "ws": "^8.18.0"
+  }
+}

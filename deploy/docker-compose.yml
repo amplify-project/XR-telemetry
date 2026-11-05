@@ -1,0 +1,28 @@
+# Redis + gateway, for trying XR-telemetry locally or running it on one host.
+#
+#   cd deploy && cp .env.example .env && docker compose up -d --build
+#   curl localhost:8090/health
+#
+# Already have a Redis (e.g. the Physiological-Signals hub)? Run only the
+# gateway against it:   REDIS_URL=redis://<hub>:6379 docker compose up -d gateway
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:${REDIS_PORT:-6380}:6379"]   # 6380 on the host: 6379 is often taken
+    volumes: [redis_data:/data]
+
+  gateway:
+    build: ../gateway
+    restart: unless-stopped
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      XRTEL_NAMESPACE: ${XRTEL_NAMESPACE:-}
+      INGEST_TOKEN: ${INGEST_TOKEN:-}
+      CONSUME_TOKEN: ${CONSUME_TOKEN:-}
+      BASE_PATH: ${BASE_PATH:-}
+    ports: ["${GATEWAY_BIND:-127.0.0.1}:${GATEWAY_PORT:-8090}:8090"]
+
+volumes:
+  redis_data:
