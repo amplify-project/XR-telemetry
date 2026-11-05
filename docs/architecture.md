@@ -158,6 +158,10 @@ experiment can share one deployment. The gateway applies the rule for its
 producers when it writes. The archiver applies it again when it reads, for
 producers that write to Redis directly.
 
+Physiological-Signals' engagement PC has its own session name,
+`engagement:session_id`. It is read as a further fallback after
+`session:current` and never written ([partners](partners.md#session-names-engagementsession_id)).
+
 Session boundaries and marks are ordinary `event` samples from a source called
 `operator`. They are on the same timeline as everything else, live and in the
 export.

@@ -131,7 +131,9 @@ const commands = {
     console.log(`gateway   ${BASE}  ${h.ok ? 'ok' : 'NOT OK'} (redis ${h.redis})`);
     console.log(`archive   ${h.archive ? 'on' : 'OFF — sessions are not being saved'}`);
     console.log(`live      ${h.producers} producer(s) on this gateway, ${h.consumers} consumer(s)`);
-    console.log(`session   ${s.current ? `${s.current} (since ${s.meta?.started ? clock(Date.parse(s.meta.started) / 1000) : '?'})` : 'none — xrtel start <name>'}`);
+    console.log(`session   ${!s.current ? 'none — xrtel start <name>'
+      : s.source === 'engagement' ? `${s.current} (set by the Physiological-Signals engagement PC; xrtel start overrides it)`
+      : `${s.current} (since ${s.meta?.started ? clock(Date.parse(s.meta.started) / 1000) : '?'})`}`);
   },
 
   async start() {
@@ -139,14 +141,15 @@ const commands = {
     if (!name) die('usage: xrtel start <name> [--note "…"]');
     const before = await json('GET', '/session');
     const r = await json('POST', '/session/start', { id: name, meta: opts.note ? { note: opts.note } : undefined });
-    if (before.current && before.current !== name) console.log(`(stopped following ${before.current})`);
+    if (before.current && before.current !== name) console.log(`(was ${before.source === 'engagement' ? 'following' : 'recording'} ${before.current})`);
     console.log(`▶ session ${r.current} started ${clock(Date.parse(r.meta.started) / 1000)}`);
     console.log('  Everything without its own session is now recorded under it. End with: xrtel stop');
   },
 
   async stop() {
     const r = await json('POST', '/session/stop');
-    console.log(r.stopped ? `■ session ${r.stopped} ended. Export with: xrtel export ${r.stopped}` : 'No session was running.');
+    console.log(r.stopped ? `■ session ${r.stopped} ended. Export with: xrtel export ${r.stopped}` : 'No operator session was running.');
+    if (r.source === 'engagement') console.log(`  Now following ${r.current}, set by the Physiological-Signals engagement PC.`);
   },
 
   async mark() {

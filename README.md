@@ -92,11 +92,13 @@ and mapped to spec `pose` samples.
 | `cli/` | `xrtel`: start/stop/mark, watch, sessions, export |
 | `sdk/js/` | Browser / WebXR / Node SDK: `pose()`, `event()`, `send()` |
 | `tools/simulate.mjs` | Fake headsets (via gateway) and wearables (direct to Redis) |
+| `tools/bridge.mjs` | A local Redis (venue LAN) → a remote gateway, no producer changes |
 | `examples/python/` | Reading live and history straight from Redis |
 | `deploy/` | Docker Compose: Redis + gateway + archiver |
 
 ## Documents
 
+- [`docs/partners.md`](docs/partners.md) — what partner projects change (nothing in code) and the Physiological-Signals bridge
 - [`docs/running-a-test.md`](docs/running-a-test.md) — from headsets on to a CSV
 - [`docs/architecture.md`](docs/architecture.md) — how it works, with diagrams
 - [`docs/deployment.md`](docs/deployment.md) — laptop, lab LAN, cloud (EC2 + CloudFront), troubleshooting, retention

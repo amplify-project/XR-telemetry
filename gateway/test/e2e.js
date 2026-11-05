@@ -87,6 +87,7 @@ function client(url, skewMs = 0) {
   const consAll = await client(`${B}/consume?token=${OUT}`);
   const consA = await client(`${B}/consume?token=${OUT}&session=rehearsal-a`);
   const consPose = await client(`${B}/consume?token=${OUT}&signals=pose`);
+  const consOld = await client(`${B}/consume?token=${OUT}&format=legacy`);
   await wait(100);
 
   // ── spec producer, clock 5 h off ──
@@ -143,6 +144,10 @@ function client(url, skewMs = 0) {
   check(lp && lp.py === 1.6 && lp.qw === 1 && lp.gz === -1 && lp.gaze_src === 'head' && lp.media_t === 12.5 && lp.z === 0.3 && lp.f === 2 && lp.rec === 'take-1',
         'legacy player batch mapped to a spec pose (gaze derived, z/f/rec kept)', lp);
 
+  const up = consOld.events.find((e) => e.type === 'update' && e.id === 'lip-player');
+  check(up && up.p.join() === '0,1.6,0' && up.q.join() === '0,0,0,1' && up.gaze.join() === '0,0,-1' && up.mt === 12.5 && up.z === 0.3 && up.f === 2 &&
+        up.rec === 'take-1' && consOld.events.every((e) => e.type !== 'sample'), 'format=legacy gives a relay consumer its old update messages, poses only', up);
+
   // ── snapshot for a late consumer ──
   const late = await client(`${B}/consume?token=${OUT}`);
   await wait(100);
@@ -158,7 +163,8 @@ function client(url, skewMs = 0) {
   check((await call('GET', '/sessions', null, null)).status === 401 && (await call('POST', '/session/start', { id: 'x' }, IN)).status === 401,
         'API needs the consume token (not the ingest one)');
   const started = await (await call('POST', '/session/start', { id: 'pilot-x', meta: { note: 'two headsets' } })).json();
-  check(started.current === 'pilot-x' && started.meta.note === 'two headsets' && !!started.meta.started, 'operator starts a session when they choose', started);
+  check(started.current === 'pilot-x' && started.source === 'operator' && started.meta.note === 'two headsets' && !!started.meta.started,
+        'operator starts a session when they choose', started);
   player.send(JSON.stringify({ b: [{ t: player.now(), w: Date.now(), mt: 13, p: [0.5, 1.6, 0], q: [0, 0, 0, 1] }] }));     // no session of its own
   const physio2 = { device: 'MD-V5-0000334', timestamp: Date.now() / 1000, hr: 80 };                         // nor this one
   await redis.xadd(`${NS}:device:MD-V5-0000334:physio_metrics`, '*', 'device', physio2.device, 'timestamp', physio2.timestamp, 'hr', 80);
@@ -181,9 +187,13 @@ function client(url, skewMs = 0) {
   const nd = (await (await call('GET', '/sessions/pilot-x/export?format=ndjson')).text()).trim().split('\n').map(JSON.parse);
   check(nd.some((r) => r.signal === 'physio_metrics' && r.hr === 80) && nd.some((r) => r.name === 'song-2'), 'NDJSON export of everything, numbers as numbers');
   check((await call('GET', '/sessions/nope/export')).status === 404, 'export of an unknown session → 404');
+  await redis.set(`${NS}:engagement:session_id`, 'concert-folder');                 // Physiological-Signals' join key
   const stopped = await (await call('POST', '/session/stop')).json();
+  check((await redis.get(`${NS}:engagement:session_id`)) === 'concert-folder', 'start/stop never touch engagement:session_id (owned by Physiological-Signals)');
   const now = await (await call('GET', '/session')).json();
-  check(stopped.stopped === 'pilot-x' && !!stopped.meta.ended && now.current === null, 'operator stops the session', stopped);
+  check(stopped.stopped === 'pilot-x' && !!stopped.stoppedMeta.ended && now.current === 'concert-folder' && now.source === 'engagement',
+        'operator stops; the engagement PC\'s session shows through, marked as such', now);
+  await redis.del(`${NS}:engagement:session_id`);
 
   // ── retention ──
   const day = 86400, old = Date.now() / 1000 - 40 * day;
@@ -213,7 +223,7 @@ function client(url, skewMs = 0) {
   const h = gw.health();
   check(h.ok && h.namespace === NS, 'health reports Redis ready', h);
 
-  for (const ws of [consAll, consA, consPose, other, player, late]) ws.close();
+  for (const ws of [consAll, consA, consPose, consOld, other, player, late]) ws.close();
   rawSub.disconnect();
   await finish();
 })().catch(async (e) => { console.error(e); failed = true; await finish(); });

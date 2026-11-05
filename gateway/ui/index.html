@@ -136,7 +136,7 @@ tbody tr.sel { background: var(--chip); }
     <section>
       <h2>Session</h2>
       <div id="idle">
-        <p class="muted" style="margin-top:0">No session running. Everything that arrives now is kept under <span class="mono">_none</span>.</p>
+        <p class="muted" style="margin-top:0" id="idleText">No session running. Everything that arrives now is kept under <span class="mono">_none</span>.</p>
         <form id="startForm" class="row">
           <input id="sessName" type="text" placeholder="name, e.g. pilot-03" pattern="[A-Za-z0-9_.\-]{1,64}" required>
           <input id="sessNote" type="text" placeholder="note (optional)">
@@ -281,6 +281,13 @@ async function pollStatus() {
 }
 
 function renderSession(s) {
+  // A session set by Physiological-Signals' engagement PC is followed, not owned:
+  // it shows as idle (with its name) and only an operator session can override it.
+  const eng = s.source === 'engagement' ? s.current : null;
+  $('idleText').innerHTML = eng
+    ? `Following <span class="mono">${esc(eng)}</span>, set by the Physiological-Signals engagement PC. Start a session to use your own name.`
+    : 'No session running. Everything that arrives now is kept under <span class="mono">_none</span>.';
+  if (eng) s = { current: null };
   const changed = s.current !== current;
   current = s.current;
   startedAt = s.meta?.started ? Date.parse(s.meta.started) : null;
@@ -317,7 +324,7 @@ $('startForm').onsubmit = async (e) => {
 };
 $('stopBtn').onclick = async () => {
   ctlErr();
-  try { const r = await json('POST', '/session/stop'); renderSession({ current: null }); await loadSessions(); if (r.stopped) openDetail(r.stopped); }
+  try { const r = await json('POST', '/session/stop'); renderSession(r); await loadSessions(); if (r.stopped) openDetail(r.stopped); }
   catch (err) { ctlErr(err); }
 };
 const recentMarks = (store.get('xrtel.marks') || '').split('\n').filter(Boolean);

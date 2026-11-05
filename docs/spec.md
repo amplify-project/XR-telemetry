@@ -70,7 +70,7 @@ that must not lose samples (recorders, the archiver) read the stream with
 | `device:{src}:meta` | hash | `kind` (`xr`, `wearable`, `camera`…), `platform`, `signals` (comma list), `frame` (§5.1), `sdk`, `version` |
 | `device:{src}:alive` | string, TTL | Set with `EX 5` on every batch; absence = source gone |
 | `session:current` | string | Current session id |
-| `engagement:session_id` | string | Legacy name of the same thing; the gateway keeps both in step *(open: retire?)* |
+| `engagement:session_id` | string | Set by the Physiological-Signals engagement PC (its recording folder, a join key in the wearables' CSVs). XR-telemetry reads it as a fallback when `session:current` is unset and **never writes it** |
 | `session:{id}:meta` | hash | `started` (ISO 8601), `project`, `venue`, free fields |
 | `participant:{pid}` | hash | `{role} → {src}`, e.g. `xr → quest-07`, `wearable → MD-V5-0000334` |
 | `device:{src}:participant` | string | Reverse lookup, `{pid}` |
@@ -219,13 +219,17 @@ The gateway writes each sample to Redis per §3–§4, adding `srv_ts`,
 
 **Consumer messages.** On connect a `snapshot` (latest sample of each live
 source, per signal), then `sample` and `leave` messages. `signals=pose,event`
-on the query string filters by signal.
+on the query string filters by signal. `format=legacy` speaks the Livestreamed
+player relay's consumer protocol instead (`snapshot.players`, `update` with
+`id, p, q, gaze, srv` in ms, `leave.id`; poses only), for consumers written
+against that relay.
 
 **Operator API** (HTTP, `Authorization: Bearer <consume token>`):
 `GET /session`, `POST /session/start {id, meta}`, `POST /session/stop`,
-`POST /mark {name, value}`. Starting sets `session:current` (and
-`engagement:session_id`) and `session:{id}:meta.started`; stopping clears them
-and sets `ended`. Session boundaries and marks are written as `event` samples
+`POST /mark {name, value}`. Starting sets `session:current` and
+`session:{id}:meta.started`; stopping clears it and sets `ended`.
+`engagement:session_id` is never touched. `GET /session` reports `source`:
+`operator` or `engagement`. Session boundaries and marks are written as `event` samples
 from the source `operator` (`name` = `session_start`, `session_stop` or the
 mark), so live consumers and the archive see them on the same timeline.
 `GET /sessions…` is proxied to the archiver (§9).
@@ -275,7 +279,8 @@ Next *(open)*:
 **Physiological-Signals** — conforms as is: `device:{serial}:{signal}`,
 PUBLISH + XADD, flat payload with `device` and `timestamp`, `MAXLEN` 20 000.
 Gains, without changing anything: XR poses under the same pattern, durable
-storage via the archiver. Optional additions: `seq`, `participant`, and
+storage via the archiver, and, through `tools/bridge.mjs` from a venue LAN to
+a remote gateway, a reference-clock `srv_ts` on every wearable sample. Optional additions: `seq`, `participant`, and
 `srv_ts` once direct producers can get a reference clock (§6).
 
 **Livestreamed Immersive Player** — today publishes to its own relay with a
@@ -286,7 +291,7 @@ project fields on `pose` or become `event`s *(open)*.
 
 ## 12. Open questions
 
-1. Retire `engagement:session_id` in favour of `session:current`, or keep both?
+1. ~~Retire `engagement:session_id`?~~ Kept, owned by Physiological-Signals, read-only for XR-telemetry (§3.2).
 2. Reference clock for producers that write to Redis directly (§6).
 3. Per-signal JSON Schemas and whether the gateway validates.
 4. Archiver table shape for high-rate signals.

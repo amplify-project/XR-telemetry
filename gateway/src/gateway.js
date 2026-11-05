@@ -80,7 +80,12 @@ function createGateway({
     const msg = { type: 'sample', signal, device: src, ...fields };
     latest.set(`${src}\0${signal}`, { at: Date.now(), msg });
     const data = JSON.stringify(msg);
-    for (const c of consumers) if (wants(c, msg)) send(c.ws, data);
+    let legacy;                                        // built only if a legacy consumer wants it
+    for (const c of consumers) {
+      if (!wants(c, msg)) continue;
+      if (!c.legacy) send(c.ws, data);
+      else if (signal === 'pose') send(c.ws, legacy ??= JSON.stringify({ type: 'update', ...toLegacy(msg) }));
+    }
   });
 
   // Session filtering applies only to samples that carry a session: producers
@@ -104,33 +109,46 @@ function createGateway({
     sessionCache = { at: Date.now(), value: v };
     return v;
   }
+  // Who set it: the operator (session:current, can be stopped here) or
+  // Physiological-Signals' engagement PC (engagement:session_id, read only).
+  async function sessionInfo() {
+    const [op, eng] = await Promise.all([redis.get(`${ns}session:current`), redis.get(`${ns}engagement:session_id`)]);
+    const id = op || eng || null;
+    return { current: id, source: op ? 'operator' : eng ? 'engagement' : null,
+      meta: id ? await redis.hgetall(`${ns}session:${id}:meta`) : null };
+  }
 
   // Operator control (spec §3.2): the session is named by whoever runs the
-  // test, at the moment they choose, and everything that arrives without a
+  // test, at the moment they choose. Only session:current is written:
+  // engagement:session_id belongs to Physiological-Signals' engagement PC
+  // (its recording folder, stamped into the wearables' CSVs as a join key)
+  // and is only read, as a fallback. The session is named by whoever runs the
+  // test, and everything that arrives without a
   // session of its own — headsets, wearables writing to Redis — is filed under it.
   async function startSession(id, extra = {}) {
     const now = new Date().toISOString();
     const meta = {};
     for (const [k, v] of Object.entries(extra || {})) if (v != null && typeof v !== 'object') meta[k] = String(v);
     const p = redis.pipeline()
-      .set(`${ns}session:current`, id).set(`${ns}engagement:session_id`, id)
+      .set(`${ns}session:current`, id)
       .hsetnx(`${ns}session:${id}:meta`, 'started', now)
       .hdel(`${ns}session:${id}:meta`, 'ended');
     if (Object.keys(meta).length) p.hset(`${ns}session:${id}:meta`, meta);
     await p.exec();
     sessionCache = { at: Date.now(), value: id };
     await operatorEvent(id, 'session_start');
-    return { current: id, meta: await redis.hgetall(`${ns}session:${id}:meta`) };
+    return sessionInfo();
   }
   async function stopSession() {
-    const id = await currentSession();
-    if (!id) return { current: null, stopped: null };
+    const id = await redis.get(`${ns}session:current`);
+    sessionCache = { at: 0, value: null };
+    if (!id) return { ...(await sessionInfo()), stopped: null };
     await operatorEvent(id, 'session_stop');
     await redis.pipeline()
-      .del(`${ns}session:current`).del(`${ns}engagement:session_id`)
+      .del(`${ns}session:current`)
       .hset(`${ns}session:${id}:meta`, 'ended', new Date().toISOString()).exec();
-    sessionCache = { at: Date.now(), value: null };
-    return { current: null, stopped: id, meta: await redis.hgetall(`${ns}session:${id}:meta`) };
+    sessionCache = { at: 0, value: null };
+    return { ...(await sessionInfo()), stopped: id, stoppedMeta: await redis.hgetall(`${ns}session:${id}:meta`) };
   }
   // Marks and session boundaries are ordinary `event` samples from a source
   // called `operator`: live consumers see them and the archiver files them.
@@ -187,10 +205,7 @@ function createGateway({
     const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
     if (want && !sameSecret(bearer || url.searchParams.get('token'), want)) return reply(res, 401, { error: 'consume token required' });
 
-    if (p === '/session' && req.method === 'GET') {
-      const id = await currentSession();
-      return reply(res, 200, { current: id, meta: id ? await redis.hgetall(`${ns}session:${id}:meta`) : null });
-    }
+    if (p === '/session' && req.method === 'GET') return reply(res, 200, await sessionInfo());
     if (p === '/session/start' && req.method === 'POST') {
       const body = await readJson(req);
       const id = String(body.id ?? body.session ?? '');
@@ -239,8 +254,9 @@ function createGateway({
     const session = url.searchParams.get('session');
     if (session && !NAME_RE.test(session)) return refuse(socket, 400, 'Bad Request');
     const signals = url.searchParams.get('signals');
+    const legacy = url.searchParams.get('format') === 'legacy';
     wss.handleUpgrade(req, socket, head, (ws) => {
-      if (path === '/consume') onConsumer(ws, { session, signals });
+      if (path === '/consume') onConsumer(ws, { session, signals, legacy });
       else onProducer(ws, { session });
     });
   };
@@ -298,7 +314,8 @@ function createGateway({
       redis.del(`${ns}device:${device}:alive`).catch(() => {});
       for (const k of latest.keys()) if (k.startsWith(device + '\0')) latest.delete(k);
       const data = JSON.stringify({ type: 'leave', device });
-      for (const c of consumers) send(c.ws, data);
+      const old = JSON.stringify({ type: 'leave', id: device });
+      for (const c of consumers) send(c.ws, c.legacy ? old : data);
     });
     ws.on('error', () => { /* close follows */ });
   }
@@ -318,13 +335,17 @@ function createGateway({
   }
 
   // ── Consumers ─────────────────────────────────────────────────────────
-  function onConsumer(ws, { session, signals }) {
-    const c = { ws, session: session || null, signals: signals ? new Set(signals.split(',').filter(Boolean)) : null };
+  // format=legacy: the Livestreamed player relay's own consumer protocol
+  // ({type:'snapshot', players}, {type:'update', id, p, q, gaze, srv…}, {type:'leave', id}),
+  // poses only, so a consumer written for the relay (the Unity render) works unchanged.
+  function onConsumer(ws, { session, signals, legacy = false }) {
+    const c = { ws, legacy, session: session || null,
+      signals: legacy ? new Set(['pose']) : signals ? new Set(signals.split(',').filter(Boolean)) : null };
     consumers.add(c);
     const cutoff = Date.now() - snapshotTtlMs;
     const samples = [];
     for (const { at, msg } of latest.values()) if (at >= cutoff && wants(c, msg)) samples.push(msg);
-    send(ws, JSON.stringify({ type: 'snapshot', samples }));
+    send(ws, JSON.stringify(legacy ? { type: 'snapshot', players: samples.map(toLegacy) } : { type: 'snapshot', samples }));
     ws.on('close', () => consumers.delete(c));
     ws.on('error', () => consumers.delete(c));
   }
@@ -358,6 +379,18 @@ function createGateway({
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────
+// A spec pose sample in the relay's field names and units (ms, arrays).
+function toLegacy(m) {
+  const n = (v) => (typeof v === 'number' ? v : v == null ? null : +v);
+  const vec = (...k) => (k.every((x) => m[x] != null) ? k.map((x) => n(m[x])) : null);
+  return {
+    id: m.device, frame: m.frame ?? null, rec: m.rec ?? null,
+    t: n(m.t_mono), w: m.timestamp != null ? Math.round(n(m.timestamp) * 1000) : null,
+    srv: m.srv_ts != null ? Math.round(n(m.srv_ts) * 10000) / 10 : null, mt: n(m.media_t),
+    p: vec('px', 'py', 'pz'), q: vec('qx', 'qy', 'qz', 'qw'), gaze: vec('gx', 'gy', 'gz'),
+    z: n(m.z), f: n(m.f),
+  };
+}
 function send(ws, data) { if (ws.readyState === 1) ws.send(data); }
 function reply(res, code, body) {
   res.writeHead(code, { 'content-type': 'application/json' });
