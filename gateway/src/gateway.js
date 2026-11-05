@@ -110,7 +110,9 @@ function createGateway({
       res.writeHead(h.ok ? 200 : 503, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(h));
     }
-    res.writeHead(404); res.end();
+    // Say where we are: an empty 404 behind a proxy looks like "nothing there".
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end(`xr-telemetry gateway: not found. Serving ${base || '/'} — try ${base}/health\n`);
   };
   const attached = !!hostServer;
   const server = hostServer || (tls ? https.createServer(tls, handler) : http.createServer(handler));
