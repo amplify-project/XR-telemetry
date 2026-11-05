@@ -3,6 +3,17 @@
 From "headsets on" to a CSV, without touching Redis or WebSockets. Everything
 goes through the `xrtel` command and a deployment's gateway URL.
 
+## In a browser
+
+Open `https://<host>/telemetry/ui/` (the gateway's own address with `/ui/`),
+paste the consume token once, and the page does everything below: start and
+stop a session, marks (recent ones become one-click chips), live devices with
+their rates, a top view of where every headset is and where it looks, the
+recorded sessions with their streams and marks, and CSV/NDJSON downloads.
+
+The rest of this page is the same from a terminal, for scripts and for when a
+browser is not at hand.
+
 ## Once
 
 ```bash

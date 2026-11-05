@@ -32,7 +32,9 @@ XR-telemetry is a **convention over Redis**, plus a few small pieces:
 - **Gateway** — WebSocket front for browsers/WebXR and for deployments where
   Redis must not be exposed; tokens and sessions.
 - **Archiver** — every session kept in SQLite, exported as CSV/NDJSON.
-- **`xrtel` CLI** — start and stop a test when you choose, put markers on the
+- **Operator console** — a web page served by the gateway at `/ui/`: sessions,
+  marks, live devices, a top view of the room, downloads.
+- **`xrtel` CLI** — the same from a terminal: start and stop a test when you choose, put markers on the
   timeline, watch live, export. See [Running a test](docs/running-a-test.md).
 
 The AMPLIFY Physiological-Signals stack already follows the key space, so it
@@ -54,6 +56,8 @@ node cli/xrtel.mjs stop
 node cli/xrtel.mjs show first-test
 node cli/xrtel.mjs export first-test --signal pose
 ```
+
+Or do the same from the browser at <http://localhost:8090/ui/>.
 
 Three simulated headsets publish poses and events through the gateway with the
 JS SDK; two simulated wearables write straight to Redis the way
@@ -79,6 +83,7 @@ and mapped to spec `pose` samples.
 |---|---|
 | `docs/spec.md` | The specification |
 | `gateway/` | WebSocket ↔ Redis gateway (Node): tokens, sessions, reference clock, snapshot, presence, operator API — and the archiver (`bin/xrtel-archiver.js`), same image |
+| `gateway/ui/` | Operator console (one HTML file, served at `/ui/`) |
 | `cli/` | `xrtel`: start/stop/mark, watch, sessions, export |
 | `sdk/js/` | Browser / WebXR / Node SDK: `pose()`, `event()`, `send()` |
 | `tools/simulate.mjs` | Fake headsets (via gateway) and wearables (direct to Redis) |

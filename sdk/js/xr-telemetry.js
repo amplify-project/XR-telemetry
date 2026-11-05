@@ -141,8 +141,16 @@ export class XRTelemetry {
       let m; try { m = JSON.parse(ev.data); } catch (_) { return; }
       if (m.ping !== undefined) this._sendRaw({ pong: m.ping, c: nowMs() });
     };
-    ws.onclose = () => { if (this._ws === ws) { this._ws = null; this._scheduleReconnect(); } };
-    ws.onerror = () => { try { ws.close(); } catch (_) { /* noop */ } };
+    // Reconnect from either event: browsers fire error then close, but Node's
+    // WebSocket fires only error when the connection never opened.
+    const lost = () => {
+      if (this._ws !== ws) return;
+      this._ws = null;
+      try { ws.close(); } catch (_) { /* already closed */ }
+      this._scheduleReconnect();
+    };
+    ws.onclose = lost;
+    ws.onerror = lost;
   }
 
   _scheduleReconnect() {

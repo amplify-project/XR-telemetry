@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XR-telemetry</title>
+<!--
+  Operator console, served by the gateway at {BASE_PATH}/ui/. One file, no
+  build, no dependencies. It uses the same API as the xrtel CLI, with the
+  consume token kept in this browser's localStorage. The page itself holds no
+  secret, which is why the gateway serves it without auth.
+-->
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6eb; --text: #1b1f24; --muted: #687280;
+  --accent: #2f6fde; --accent-ink: #ffffff; --rec: #d93a3a; --ok: #1f9d55; --warn: #c27c0e;
+  --chip: #eef1f5; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --grid: #e9ecf1;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418; --panel: #191d23; --line: #2a3039; --text: #e6e9ee; --muted: #8b95a3;
+    --accent: #5b8ff0; --accent-ink: #0b0e12; --rec: #ef5a5a; --ok: #3cc477; --warn: #e2a43b;
+    --chip: #232932; --grid: #232a33;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, input { font: inherit; color: inherit; }
+header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+header .where { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+header .spacer { flex: 1; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px;
+  background: var(--chip); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--rec); } .dot.warn { background: var(--warn); }
+main { max-width: 1280px; margin: 0 auto; padding: 18px 20px 40px; display: grid; gap: 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+  margin: 0 0 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+section h2 .right { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.full { grid-column: 1 / -1; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 12px 16px 32px; } header { padding: 10px 16px; } }
+
+.btn { border: 1px solid var(--line); background: var(--panel); padding: 7px 14px; border-radius: 7px; cursor: pointer; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.danger { background: var(--rec); border-color: var(--rec); color: #fff; font-weight: 600; }
+.btn.small { padding: 3px 10px; font-size: 12px; }
+.btn:disabled { opacity: .5; cursor: default; }
+input[type=text], input[type=password] { border: 1px solid var(--line); background: var(--bg); border-radius: 7px;
+  padding: 7px 10px; min-width: 0; }
+input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.row > input { flex: 1 1 160px; }
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); }
+.err { color: var(--rec); min-height: 1.2em; margin-top: 8px; font-size: 13px; }
+
+/* control */
+.rec { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+.rec .big { font-size: 22px; font-weight: 650; }
+.rec .timer { font-family: var(--mono); font-size: 22px; color: var(--muted); margin-left: auto; }
+.recdot { width: 14px; height: 14px; border-radius: 50%; background: var(--rec); animation: pulse 1.4s infinite; flex: none; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .recdot { animation: none; } }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.chip { background: var(--chip); border: 1px solid transparent; border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+.chip:hover { border-color: var(--muted); }
+
+/* live */
+.devices { display: grid; gap: 8px; }
+.dev { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; align-items: baseline;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.dev .name { font-weight: 600; font-family: var(--mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.dev .sig { grid-column: 2 / 4; font-size: 12px; color: var(--muted); font-family: var(--mono); overflow-wrap: anywhere; }
+.dev .val { grid-column: 1 / -1; font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.dev.stale { opacity: .45; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+canvas { width: 100%; height: 300px; display: block; border-radius: 8px; background: var(--bg); }
+.log { font-family: var(--mono); font-size: 12.5px; max-height: 300px; overflow: auto; }
+.log div { padding: 3px 0; border-bottom: 1px dashed var(--line); overflow-wrap: anywhere; }
+.log .op { color: var(--accent); font-weight: 600; }
+.empty { color: var(--muted); font-size: 13px; padding: 14px 0; text-align: center; }
+
+/* sessions */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--bg); }
+tbody tr.sel { background: var(--chip); }
+.detail { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.detail h3 { margin: 0 0 4px; font-size: 16px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+@media (max-width: 700px) { .cols { grid-template-columns: 1fr; } }
+
+/* login */
+.login { max-width: 420px; margin: 12vh auto; padding: 0 16px; }
+.login section { padding: 22px; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="login" class="login hidden">
+  <section>
+    <h2>XR-telemetry</h2>
+    <p class="muted" style="margin-top:0">Enter the deployment's <b>consume token</b>. It stays in this browser.</p>
+    <form id="loginForm" class="row">
+      <input id="tokenInput" type="password" placeholder="consume token" autocomplete="current-password">
+      <button class="btn primary">Connect</button>
+    </form>
+    <div id="loginErr" class="err"></div>
+  </section>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>XR-telemetry</h1>
+    <span class="where" id="where"></span>
+    <span class="spacer"></span>
+    <span class="pill"><span class="dot" id="dotGw"></span><span id="txtGw">gateway</span></span>
+    <span class="pill"><span class="dot" id="dotAr"></span><span id="txtAr">archive</span></span>
+    <span class="pill"><span class="dot" id="dotWs"></span><span id="txtWs">live</span></span>
+    <button class="btn small" id="logout" title="Forget the token in this browser">Log out</button>
+  </header>
+
+  <main>
+    <section>
+      <h2>Session</h2>
+      <div id="idle">
+        <p class="muted" style="margin-top:0">No session running. Everything that arrives now is kept under <span class="mono">_none</span>.</p>
+        <form id="startForm" class="row">
+          <input id="sessName" type="text" placeholder="name, e.g. pilot-03" pattern="[A-Za-z0-9_.\-]{1,64}" required>
+          <input id="sessNote" type="text" placeholder="note (optional)">
+          <button class="btn primary">Start</button>
+        </form>
+      </div>
+      <div id="running" class="hidden">
+        <div class="rec">
+          <span class="recdot"></span>
+          <span class="big mono" id="curName"></span>
+          <span class="timer" id="timer">00:00</span>
+        </div>
+        <div class="muted" id="curNote" style="margin:-8px 0 12px"></div>
+        <form id="markForm" class="row">
+          <input id="markName" type="text" placeholder="mark, e.g. song-2" maxlength="128" required>
+          <input id="markValue" type="text" placeholder="value (optional)">
+          <button class="btn">Mark</button>
+          <button type="button" class="btn danger" id="stopBtn">Stop</button>
+        </form>
+        <div class="chips" id="markChips"></div>
+      </div>
+      <div id="ctlErr" class="err"></div>
+    </section>
+
+    <section>
+      <h2>Events <span class="right muted" id="evCount"></span></h2>
+      <div class="log" id="events"><div class="empty">Marks and events appear here.</div></div>
+    </section>
+
+    <section>
+      <h2>Devices <span class="right muted" id="devCount"></span></h2>
+      <div class="devices" id="devices"><div class="empty">Waiting for devices…</div></div>
+    </section>
+
+    <section>
+      <h2>Room, top view <span class="right muted" id="viewInfo"></span></h2>
+      <canvas id="room" aria-label="Headset positions seen from above"></canvas>
+      <div class="muted" style="font-size:12px;margin-top:6px">x → right, z ↓ towards the viewer · line = where the head points · 1 m grid. Headsets in <span class="mono">local-floor</span> each have their own origin.</div>
+    </section>
+
+    <section class="full">
+      <h2>Recorded sessions <span class="right"><button class="btn small" id="refresh">Refresh</button></span></h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Session</th><th>Started</th><th class="num">Length</th><th class="num">Samples</th><th>Devices</th></tr></thead>
+          <tbody id="sessions"></tbody>
+        </table>
+      </div>
+      <div id="sessEmpty" class="empty hidden">Nothing recorded yet.</div>
+      <div id="detail" class="detail hidden"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+'use strict';
+// ── config ──────────────────────────────────────────────────────────────
+// The page lives at {base}/ui/, the API at {base}/.
+const BASE = location.pathname.replace(/\/ui\/?(index\.html)?$/, '');
+const API = location.origin + BASE;
+const WS = API.replace(/^http/, 'ws');
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+};
+const TOKEN_KEY = 'xrtel.token:' + API;
+let token = store.get(TOKEN_KEY) || '';
+let authOpen = false;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pad = (n, w = 2) => String(n).padStart(w, '0');
+const clock = (ts, ms) => { const d = new Date(ts * 1000); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${ms ? '.' + pad(d.getMilliseconds(), 3) : ''}`; };
+const day = (ts) => { const d = new Date(ts * 1000); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const dur = (s) => { s = Math.max(0, Math.round(s)); return s >= 3600 ? `${Math.floor(s / 3600)}h${pad(Math.floor(s / 60) % 60)}m` : s >= 60 ? `${Math.floor(s / 60)}m${pad(s % 60)}s` : `${s}s`; };
+const f2 = (v) => (typeof v === 'number' ? v.toFixed(2) : '—');
+
+async function api(method, path, body) {
+  const res = await fetch(API + path, {
+    method,
+    headers: { ...(token ? { authorization: 'Bearer ' + token } : {}), ...(body ? { 'content-type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) { showLogin('That token was refused.'); throw new Error('401'); }
+  if (res.status === 403) throw new Error('403 from the CDN — allow POST on the CloudFront behavior');
+  return res;
+}
+async function json(method, path, body) {
+  const res = await api(method, path, body);
+  const t = await res.text();
+  let d; try { d = JSON.parse(t); } catch { d = { error: t.slice(0, 200) }; }
+  if (!res.ok) throw new Error(d.error || res.status);
+  return d;
+}
+
+// ── login ───────────────────────────────────────────────────────────────
+function showLogin(msg) {
+  stopLive();
+  $('app').classList.add('hidden'); $('login').classList.remove('hidden');
+  $('loginErr').textContent = msg || '';
+  $('tokenInput').focus();
+}
+$('loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  token = $('tokenInput').value.trim();
+  try { await json('GET', '/session'); store.set(TOKEN_KEY, token); boot(); }
+  catch (err) { if (err.message !== '401') $('loginErr').textContent = err.message; }
+};
+$('logout').onclick = () => { store.set(TOKEN_KEY, null); token = ''; showLogin(); };
+
+async function start() {
+  let h;
+  try { h = await fetch(API + '/health').then((r) => r.json()); }
+  catch { document.body.innerHTML = `<p style="padding:20px">No XR-telemetry gateway at ${esc(API)}/health.</p>`; return; }
+  authOpen = !h.auth?.consume;
+  if (!authOpen && !token) return showLogin();
+  try { await json('GET', '/session'); } catch (e) { if (e.message === '401') return; }
+  boot();
+}
+
+function boot() {
+  $('login').classList.add('hidden'); $('app').classList.remove('hidden');
+  $('where').textContent = API.replace(/^https?:\/\//, '');
+  $('logout').classList.toggle('hidden', authOpen);
+  pollStatus(); setInterval(pollStatus, 4000);
+  loadSessions(); setInterval(() => { if (!document.hidden) loadSessions(true); }, 15000);
+  startLive();
+  requestAnimationFrame(frame);
+}
+
+// ── status & session control ────────────────────────────────────────────
+let current = null, startedAt = null;
+function setDot(id, state, text, tid) { $(id).className = 'dot ' + state; if (text) $(tid).textContent = text; }
+
+async function pollStatus() {
+  try {
+    const h = await fetch(API + '/health').then((r) => r.json());
+    setDot('dotGw', h.ok ? 'ok' : 'bad', h.ok ? 'gateway' : 'gateway: redis ' + h.redis, 'txtGw');
+    setDot('dotAr', h.archive ? 'ok' : 'warn', h.archive ? 'archive' : 'archive off', 'txtAr');
+  } catch { setDot('dotGw', 'bad', 'gateway unreachable', 'txtGw'); }
+  try { renderSession(await json('GET', '/session')); } catch {}
+}
+
+function renderSession(s) {
+  const changed = s.current !== current;
+  current = s.current;
+  startedAt = s.meta?.started ? Date.parse(s.meta.started) : null;
+  $('idle').classList.toggle('hidden', !!current);
+  $('running').classList.toggle('hidden', !current);
+  if (current) {
+    $('curName').textContent = current;
+    $('curNote').textContent = s.meta?.note || '';
+    if (changed) $('markName').focus();
+  } else if (changed && !$('sessName').value) {
+    const d = new Date();
+    $('sessName').placeholder = `test-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  }
+  document.title = current ? `● ${current} — XR-telemetry` : 'XR-telemetry';
+}
+setInterval(() => {
+  if (current && startedAt) {
+    const s = Math.floor((Date.now() - startedAt) / 1000);
+    $('timer').textContent = s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}` : `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
+  }
+}, 250);
+
+const ctlErr = (e) => { $('ctlErr').textContent = e ? e.message || e : ''; };
+$('startForm').onsubmit = async (e) => {
+  e.preventDefault(); ctlErr();
+  const id = $('sessName').value.trim() || $('sessName').placeholder;
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(id)) return ctlErr('Name: letters, digits, . _ - (max 64).');
+  try {
+    const note = $('sessNote').value.trim();
+    renderSession(await json('POST', '/session/start', { id, meta: note ? { note } : undefined }));
+    $('sessName').value = ''; $('sessNote').value = '';
+    loadSessions(true);
+  } catch (err) { ctlErr(err); }
+};
+$('stopBtn').onclick = async () => {
+  ctlErr();
+  try { const r = await json('POST', '/session/stop'); renderSession({ current: null }); await loadSessions(); if (r.stopped) openDetail(r.stopped); }
+  catch (err) { ctlErr(err); }
+};
+const recentMarks = (store.get('xrtel.marks') || '').split('\n').filter(Boolean);
+function renderChips() {
+  $('markChips').innerHTML = recentMarks.map((m) => `<button type="button" class="chip">${esc(m)}</button>`).join('');
+  [...$('markChips').children].forEach((b) => (b.onclick = () => mark(b.textContent)));
+}
+renderChips();
+async function mark(name, value) {
+  ctlErr();
+  try {
+    await json('POST', '/mark', { name, value: value || undefined });
+    const i = recentMarks.indexOf(name); if (i >= 0) recentMarks.splice(i, 1);
+    recentMarks.unshift(name); recentMarks.length = Math.min(recentMarks.length, 8);
+    store.set('xrtel.marks', recentMarks.join('\n')); renderChips();
+  } catch (err) { ctlErr(err); }
+}
+$('markForm').onsubmit = (e) => {
+  e.preventDefault();
+  mark($('markName').value.trim(), $('markValue').value.trim());
+  $('markName').value = ''; $('markValue').value = ''; $('markName').focus();
+};
+
+// ── live ────────────────────────────────────────────────────────────────
+const devices = new Map();     // id -> { id, color, last, signals: Map(signal -> {times[], latest}) }
+const PALETTE = ['#2f6fde', '#e0663a', '#1f9d55', '#a24bd6', '#c9a00d', '#d6437f', '#2aa3b8', '#7a8a1f'];
+let ws = null, wsRetry = null, events = 0;
+
+function startLive() {
+  stopLive();
+  const q = new URLSearchParams(token ? { token } : {});
+  ws = new WebSocket(`${WS}/consume${q.size ? '?' + q : ''}`);
+  setDot('dotWs', 'warn', 'live: connecting', 'txtWs');
+  ws.onopen = () => setDot('dotWs', 'ok', 'live', 'txtWs');
+  ws.onclose = () => { setDot('dotWs', 'bad', 'live: reconnecting', 'txtWs'); wsRetry = setTimeout(startLive, 2000); };
+  ws.onerror = () => {};
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'snapshot') m.samples.forEach((s) => onSample(s, true));
+    else if (m.type === 'sample') onSample(m);
+    else if (m.type === 'leave') { const d = devices.get(m.device); if (d) d.left = true; }
+  };
+}
+function stopLive() { clearTimeout(wsRetry); if (ws) { ws.onclose = null; ws.close(); ws = null; } }
+
+function onSample(m, fromSnapshot) {
+  if (m.signal === 'event') addEvent(m);
+  if (m.device === 'operator') return;
+  let d = devices.get(m.device);
+  if (!d) devices.set(m.device, d = { id: m.device, color: PALETTE[devices.size % PALETTE.length], signals: new Map() });
+  d.last = performance.now(); d.left = false;
+  let s = d.signals.get(m.signal);
+  if (!s) d.signals.set(m.signal, s = { times: [] });
+  if (!fromSnapshot) s.times.push(d.last);
+  s.latest = m;
+}
+
+function addEvent(m) {
+  const el = $('events');
+  if (!events) el.innerHTML = '';
+  events++;
+  const t = clock(m.srv_ts ?? m.timestamp ?? Date.now() / 1000);
+  const div = document.createElement('div');
+  const op = m.device === 'operator';
+  div.innerHTML = `<span class="muted">${t}</span> <span class="${op ? 'op' : ''}">${op ? '⚑ ' : esc(m.device) + ' · '}${esc(m.name ?? 'event')}</span>${m.value !== undefined ? ' = ' + esc(m.value) : ''}`;
+  el.prepend(div);
+  while (el.children.length > 200) el.lastChild.remove();
+  $('evCount').textContent = events + ' this view';
+}
+
+function yaw(p) { return Math.atan2(2 * (p.qw * p.qy + p.qx * p.qz), 1 - 2 * (p.qx * p.qx + p.qy * p.qy)); }
+function rate(s, now) { while (s.times.length && now - s.times[0] > 5000) s.times.shift(); return s.times.length / 5; }
+function summary(sig, m) {
+  if (sig === 'pose') return `p (${f2(m.px)}, ${f2(m.py)}, ${f2(m.pz)}) · yaw ${Math.round(yaw(m) * 180 / Math.PI)}°` +
+    (m.media_t != null ? ` · media ${f2(m.media_t)} s` : '') + (m.z != null ? ` · zoom ${f2(m.z)}` : '') + (m.f != null ? ` · focus ${esc(m.f)}` : '');
+  const skip = new Set(['type', 'signal', 'device', 'timestamp', 'srv_ts', 'srv_err_ms', 't_mono', 'seq', 'session', 'participant']);
+  return Object.entries(m).filter(([k, v]) => !skip.has(k) && typeof v !== 'object').slice(0, 6)
+    .map(([k, v]) => `${esc(k)} ${typeof v === 'number' ? +v.toFixed(2) : esc(v)}`).join(' · ');
+}
+
+let lastList = 0;
+function frame() {
+  const now = performance.now();
+  if (now - lastList > 500) { renderDevices(now); lastList = now; }
+  drawRoom(now);
+  requestAnimationFrame(frame);
+}
+
+function renderDevices(now) {
+  const list = [...devices.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const live = list.filter((d) => !d.left && now - d.last < 10000).length;
+  $('devCount').textContent = list.length ? `${live} live` : '';
+  if (!list.length) return;
+  $('devices').innerHTML = list.map((d) => {
+    const stale = d.left || now - d.last > 10000;
+    const sigs = [...d.signals.entries()];
+    // Sparse signals (events) show their count, not a rate rounding to 0.0 Hz.
+    const meta = sigs.map(([k, s]) => { const r = rate(s, now); return r >= 0.5 ? `${esc(k)} ${r.toFixed(1)} Hz` : esc(k); }).join(' · ');
+    const main = sigs.find(([k]) => k === 'pose') || sigs.find(([k]) => k !== 'event') || sigs[0];
+    return `<div class="dev ${stale ? 'stale' : ''}">
+      <span class="swatch" style="background:${d.color}"></span>
+      <span class="name">${esc(d.id)}</span>
+      <span class="muted" style="font-size:12px">${stale ? (d.left ? 'left' : 'silent') : ''}</span>
+      <span class="sig">${meta}</span>
+      ${main && main[1].latest ? `<span class="val">${summary(main[0], main[1].latest)}</span>` : ''}
+    </div>`;
+  }).join('');
+}
+
+const cv = $('room'), ctx = cv.getContext('2d');
+function drawRoom(now) {
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const css = getComputedStyle(document.documentElement);
+  const poses = [];
+  for (const d of devices.values()) {
+    const p = d.signals.get('pose')?.latest;
+    if (p && typeof p.px === 'number' && !d.left && now - d.last < 10000) poses.push({ d, p });
+  }
+  // Fit: at least ±2.5 m around the origin, grown to include every headset.
+  let r = 2.5;
+  for (const { p } of poses) r = Math.max(r, Math.abs(p.px) + 0.8, Math.abs(p.pz) + 0.8);
+  const s = Math.min(W, H) / (2 * r), cx = W / 2, cz = H / 2;
+  ctx.strokeStyle = css.getPropertyValue('--grid'); ctx.lineWidth = 1;
+  for (let m = -Math.ceil(r); m <= Math.ceil(r); m++) {
+    ctx.beginPath(); ctx.moveTo(cx + m * s, 0); ctx.lineTo(cx + m * s, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, cz + m * s); ctx.lineTo(W, cz + m * s); ctx.stroke();
+  }
+  ctx.strokeStyle = css.getPropertyValue('--muted'); ctx.beginPath();
+  ctx.moveTo(cx - 6, cz); ctx.lineTo(cx + 6, cz); ctx.moveTo(cx, cz - 6); ctx.lineTo(cx, cz + 6); ctx.stroke();
+  ctx.font = '12px ' + css.getPropertyValue('--mono');
+  const frames = new Set(), boxes = [];
+  // A label goes where it does not cover another (right, left, below, above);
+  // if nowhere fits it is left out — the colour still matches the device list.
+  const label = (text, x, z) => {
+    const w = ctx.measureText(text).width, h = 14;
+    for (const [lx, lz] of [[x + 11, z - 4], [x - 11 - w, z - 4], [x - w / 2, z + 22], [x - w / 2, z - 14]]) {
+      const b = { x: lx - 2, y: lz - h + 2, w: w + 4, h };
+      if (b.x < 0 || b.x + b.w > W || b.y < 0 || b.y + b.h > H) continue;
+      if (boxes.some((o) => b.x < o.x + o.w && o.x < b.x + b.w && b.y < o.y + o.h && o.y < b.y + b.h)) continue;
+      boxes.push(b); ctx.fillText(text, lx, lz); return;
+    }
+  };
+  for (const { p } of poses) boxes.push({ x: cx + p.px * s - 8, y: cz + p.pz * s - 8, w: 16, h: 16 });   // dots first
+  for (const { d, p } of poses) {
+    frames.add(p.frame || '?');
+    const x = cx + p.px * s, z = cz + p.pz * s;
+    // Gaze if present, else head forward; drawn on the floor plane.
+    let gx = p.gx, gz = p.gz;
+    if (typeof gx !== 'number') { const a = yaw(p); gx = -Math.sin(a); gz = -Math.cos(a); }
+    const n = Math.hypot(gx, gz) || 1;
+    ctx.strokeStyle = d.color; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, z); ctx.lineTo(x + (gx / n) * 0.7 * s, z + (gz / n) * 0.7 * s); ctx.stroke();
+    ctx.fillStyle = d.color; ctx.beginPath(); ctx.arc(x, z, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = css.getPropertyValue('--text'); label(d.id, x, z);
+  }
+  $('viewInfo').textContent = poses.length ? `${poses.length} headset${poses.length > 1 ? 's' : ''} · frame ${[...frames].join(', ')}` : '';
+  if (!poses.length) { ctx.fillStyle = css.getPropertyValue('--muted'); ctx.textAlign = 'center'; ctx.fillText('no headsets live', cx, cz - 14); ctx.textAlign = 'start'; }
+}
+
+// ── sessions ────────────────────────────────────────────────────────────
+let selected = null;
+async function loadSessions(quiet) {
+  let data;
+  try { data = await json('GET', '/sessions'); }
+  catch (e) { if (!quiet) { $('sessions').innerHTML = ''; $('sessEmpty').textContent = e.message; $('sessEmpty').classList.remove('hidden'); } return; }
+  const rows = data.sessions;
+  $('sessEmpty').textContent = 'Nothing recorded yet.';
+  $('sessEmpty').classList.toggle('hidden', rows.length > 0);
+  $('sessions').innerHTML = rows.map((s) => `<tr data-id="${esc(s.session)}" class="${s.session === selected ? 'sel' : ''}">
+    <td class="mono">${s.current ? '<span class="recdot" style="display:inline-block;width:8px;height:8px;margin-right:6px"></span>' : ''}${esc(s.session)}</td>
+    <td>${day(s.first_ts)} ${clock(s.first_ts)}</td>
+    <td class="num">${dur(s.duration_s)}</td>
+    <td class="num">${s.samples.toLocaleString()}</td>
+    <td class="muted">${esc(s.devices.filter((d) => d !== 'operator').join(', '))}</td></tr>`).join('');
+  [...$('sessions').children].forEach((tr) => (tr.onclick = () => openDetail(tr.dataset.id)));
+  if (selected && quiet) openDetail(selected, true);
+}
+
+async function openDetail(id, quiet) {
+  selected = id;
+  [...$('sessions').children].forEach((tr) => tr.classList.toggle('sel', tr.dataset.id === id));
+  let s;
+  try { s = await json('GET', '/sessions/' + encodeURIComponent(id)); }
+  catch (e) { if (!quiet) { $('detail').innerHTML = `<div class="err">${esc(e.message)}</div>`; $('detail').classList.remove('hidden'); } return; }
+  const streams = s.streams.filter((r) => r.device !== 'operator');
+  const signals = [...new Set(streams.map((r) => r.signal))];
+  $('detail').classList.remove('hidden');
+  $('detail').innerHTML = `
+    <div class="row" style="align-items:flex-start">
+      <div style="flex:1;min-width:200px">
+        <h3 class="mono">${esc(s.session)}</h3>
+        <div class="muted">${day(s.first_ts)} · ${clock(s.first_ts)} → ${clock(s.last_ts)} · ${dur(s.duration_s)} · ${s.samples.toLocaleString()} samples</div>
+        ${s.meta?.note ? `<div style="margin-top:4px">${esc(s.meta.note)}</div>` : ''}
+      </div>
+      <div class="row">
+        <button class="btn small" data-x="">CSV · all</button>
+        ${signals.map((g) => `<button class="btn small" data-x="${esc(g)}">CSV · ${esc(g)}</button>`).join('')}
+        <button class="btn small" data-x="" data-f="ndjson">NDJSON · all</button>
+      </div>
+    </div>
+    <div class="cols">
+      <div class="tablewrap"><table>
+        <thead><tr><th>Device</th><th>Signal</th><th class="num">Samples</th><th class="num">Rate</th></tr></thead>
+        <tbody style="cursor:default">${streams.map((r) => `<tr style="cursor:default"><td class="mono">${esc(r.device)}</td><td>${esc(r.signal)}</td>
+          <td class="num">${r.n.toLocaleString()}</td><td class="num">${r.rate_hz != null ? r.rate_hz + ' Hz' : '—'}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <div class="log" style="max-height:260px">${s.marks.length ? s.marks.map((m) => `<div><span class="muted">${clock(m.ts)} · +${dur(m.ts - s.first_ts)}</span> <span class="op">${esc(m.name)}</span>${m.value !== undefined ? ' = ' + esc(m.value) : ''}</div>`).join('') : '<div class="empty">No marks.</div>'}</div>
+    </div>`;
+  $('detail').querySelectorAll('button[data-x]').forEach((b) => (b.onclick = () => download(s.session, b.dataset.x, b.dataset.f || 'csv', b)));
+}
+
+// Downloads go through fetch so the token travels in a header, not in a URL.
+async function download(id, signal, format, btn) {
+  const q = new URLSearchParams({ format }); if (signal) q.set('signal', signal);
+  const label = btn.textContent; btn.disabled = true; btn.textContent = 'Preparing…';
+  try {
+    const res = await api('GET', `/sessions/${encodeURIComponent(id)}/export?${q}`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = [id, signal].filter(Boolean).join('_') + '.' + format;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  } catch (e) { alertInline(e.message); }
+  finally { btn.disabled = false; btn.textContent = label; }
+}
+function alertInline(msg) { const d = document.createElement('div'); d.className = 'err'; d.textContent = msg; $('detail').prepend(d); setTimeout(() => d.remove(), 5000); }
+$('refresh').onclick = () => loadSessions();
+
+start();
+</script>
+</body>
+</html>

@@ -185,6 +185,11 @@ function client(url, skewMs = 0) {
   const now = await (await call('GET', '/session')).json();
   check(stopped.stopped === 'pilot-x' && !!stopped.meta.ended && now.current === null, 'operator stops the session', stopped);
 
+  // ── operator console page ──
+  const ui = await fetch(H + '/ui/');
+  check(ui.status === 200 && (await ui.text()).includes('XR-telemetry') && (await fetch(H + '/', { redirect: 'manual' })).status === 302,
+        'operator console served at /ui/ (and / redirects to it)');
+
   // ── leave ──
   quest.close();
   await wait(150);

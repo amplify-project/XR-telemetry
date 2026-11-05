@@ -4,6 +4,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY src ./src
 COPY bin ./bin
+COPY ui ./ui
 # node:sqlite (archiver) is stable enough for us but still flagged experimental in 22.
 ENV PORT=8090 NODE_ENV=production NODE_OPTIONS=--disable-warning=ExperimentalWarning
 EXPOSE 8090

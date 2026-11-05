@@ -11,6 +11,8 @@
 // State lives in Redis. The gateway only keeps per-connection clocks and a
 // short cache of the latest sample per (source, signal) for snapshots.
 
+const fs = require('fs');
+const path = require('path');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -51,6 +53,10 @@ function createGateway({
   const base = (basePath || '').replace(/\/+$/, '');
   const tokens = { '/ingest': ingestToken || null, '/consume': consumeToken || null };
   const say = (...a) => { if (log) console.log('[xrtel]', ...a); };
+  // Operator console: one static page, read once. It holds no secret (the
+  // token is typed into it), so it is served without auth.
+  let uiPage = null;
+  try { uiPage = fs.readFileSync(path.join(__dirname, '..', 'ui', 'index.html')); } catch { /* no ui/ next to src/ */ }
 
   // Two connections: a subscribed ioredis connection cannot issue commands.
   const redis = new Redis(redisUrl, { lazyConnect: false, maxRetriesPerRequest: 2 });
@@ -160,6 +166,15 @@ function createGateway({
     const inBase = !base || url.pathname === base || url.pathname.startsWith(base + '/');
     const p = inBase ? url.pathname.slice(base.length) : null;
     if (p === '/health') { const h = health(); return reply(res, h.ok ? 200 : 503, h); }
+    if (uiPage && (p === '' || p === '/' || p === '/ui')) { res.writeHead(302, { location: `${base}/ui/` }); return res.end(); }
+    if (uiPage && (p === '/ui/' || p === '/ui/index.html')) {
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache',
+        'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; base-uri 'none'; form-action 'none'",
+        'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
+      });
+      return res.end(uiPage);
+    }
     const api = p === '/session' || p === '/session/start' || p === '/session/stop' || p === '/mark' ||
       p === '/sessions' || (p && p.startsWith('/sessions/'));
     if (!api) {
