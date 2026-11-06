@@ -5,3 +5,4 @@ __pycache__/
 *.log
 deploy/.env
 *.sqlite*
+deploy/certs/

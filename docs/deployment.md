@@ -32,6 +32,10 @@ TLS_KEY=/certs/key.pem
 TLS_CERT=/certs/cert.pem
 ```
 
+Copy `key.pem` and `cert.pem` to `deploy/certs/` (git-ignored) and uncomment
+`volumes: ["./certs:/certs:ro"]` under `gateway` in `docker-compose.yml`. The
+headsets then use `wss://<lan-ip>:8090/ingest?token=<INGEST_TOKEN>`.
+
 ## Cloud: EC2 behind CloudFront
 
 ```mermaid

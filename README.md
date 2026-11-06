@@ -80,6 +80,28 @@ or over WebSocket at `ws://localhost:8090/consume` (`?session=`, `?signals=pose,
 `?telemetry=ws://<host>:8090/ingest` — its current wire format is accepted as is
 and mapped to spec `pose` samples.
 
+## Addresses
+
+Everything goes through the gateway, on fixed paths. The host, port and prefix
+come from `deploy/.env` (`GATEWAY_BIND`, `GATEWAY_PORT`, `BASE_PATH`); there is
+no separate setting per address.
+
+| What | Address | Token | Who |
+|---|---|---|---|
+| Ingest | `ws://<host>:8090/ingest` | `INGEST_TOKEN` | producers: player, SDK, bridge |
+| Consume | `ws://<host>:8090/consume` (`?session=`, `?signals=`, `?format=legacy`) | `CONSUME_TOKEN` | live readers |
+| Console | `http://<host>:8090/ui/` | `CONSUME_TOKEN` | operators |
+| Sessions, export | `http://<host>:8090/sessions…` | `CONSUME_TOKEN` | `xrtel`, analysts |
+| Health | `http://<host>:8090/health` | — | checks |
+| Redis | `redis://127.0.0.1:6380` | — | services on the same host |
+
+The token goes in `?token=` (HTTP also takes `Authorization: Bearer`); an empty token leaves
+that side open. With `BASE_PATH=/telemetry` every path gains the prefix
+(`…/telemetry/ingest`); with TLS (`TLS_KEY`/`TLS_CERT`, or CloudFront) it is
+`wss://` and `https://`. Cloud example:
+`wss://<dist>.cloudfront.net/telemetry/ingest?token=<INGEST_TOKEN>`. See
+[`docs/deployment.md`](docs/deployment.md).
+
 **Tests**: `cd gateway && npm test` (starts a throwaway Redis in Docker).
 
 ## Layout
