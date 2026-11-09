@@ -69,6 +69,32 @@ Running it on the engagement PC or the hub machine is enough: it only needs to
 reach the hub and the Internet. If the Internet drops, each wearable keeps up
 to 2000 samples queued and sends them on reconnect (about 30 minutes at 1 Hz).
 
+### Testing without wearables: `simulate_emotibits.py`
+
+Physiological-Signals ships `physio/simulate_emotibits.py`, which fakes N
+EmotiBits on the same channels as the real publisher. It only `PUBLISH`es; the
+real publisher (`multiemotibit_UDP_SD_RFv2.py`) also `XADD`s to the same key.
+The archiver reads streams, so:
+
+| Simulator pointed at | Live (`/consume`, console) | Archived in the session |
+|---|---|---|
+| the gateway's Redis directly | yes | **no** (Pub/Sub only, no stream) |
+| its own hub, with the bridge | yes | yes (the bridge forwards Pub/Sub) |
+
+Test through the bridge, as a venue would run it:
+
+```bash
+docker run -d --rm --name physio-hub -p 127.0.0.1:6381:6379 redis:7-alpine
+node cli/xrtel.mjs start physio-test
+node tools/bridge.mjs --redis redis://127.0.0.1:6381 --url ws://localhost:8090/ingest &
+python physio/simulate_emotibits.py --count 3 --port 6381   # in Physiological-Signals; Ctrl+C
+node cli/xrtel.mjs stop && node cli/xrtel.mjs show physio-test
+```
+
+Expect `physio_metrics`, `hr_filtered` and `eda_filtered` at 1 Hz per device,
+on the reference clock. The real publisher, pointed straight at the gateway's
+Redis, is archived without the bridge.
+
 ## Session names: `engagement:session_id`
 
 The engagement PC sets `engagement:session_id` to its recording folder, and the

@@ -42,23 +42,35 @@ const sub = new Redis(args.redis || 'redis://127.0.0.1:6379');
 for (const c of [redis, sub]) c.on('error', (e) => console.error('[bridge] redis:', e.message));
 
 const producers = new Map();       // device -> XRTelemetry
+const pending = new Map();         // device -> Promise<XRTelemetry>, while its meta is read
 let forwarded = 0, skipped = 0;
 
-async function producerFor(device) {
-  let p = producers.get(device);
+// Producers publish several channels per device at once (Physiological-Signals:
+// physio_metrics, hr_filtered, eda_filtered in the same tick). The pending map
+// makes them share one producer instead of each opening its own connection.
+function producerFor(device) {
+  const p = producers.get(device);
   if (p) return p;
-  // Carry the device's registry entry and participant over, so the remote side
-  // knows what it is and who wears it.
-  const [meta, participant] = await Promise.all([
-    redis.hgetall(`${ns}device:${device}:meta`).catch(() => ({})),
-    redis.get(`${ns}device:${device}:participant`).catch(() => null),
-  ]);
-  p = new XRTelemetry({ url: target, device, rateHz: 0, flushMs: 200, maxQueue: 2000,
-    meta: { kind: 'wearable', ...meta, ...(participant ? { participant } : {}), bridged: true } });
-  p.start();
-  producers.set(device, p);
-  console.log(`[bridge] ${device} → ${args.url}`);
-  return p;
+  let q = pending.get(device);
+  if (!q) {
+    q = (async () => {
+      // Carry the device's registry entry and participant over, so the remote
+      // side knows what it is and who wears it.
+      const [meta, participant] = await Promise.all([
+        redis.hgetall(`${ns}device:${device}:meta`).catch(() => ({})),
+        redis.get(`${ns}device:${device}:participant`).catch(() => null),
+      ]);
+      const np = new XRTelemetry({ url: target, device, rateHz: 0, flushMs: 200, maxQueue: 2000,
+        meta: { kind: 'wearable', ...meta, ...(participant ? { participant } : {}), bridged: true } });
+      np.start();
+      producers.set(device, np);
+      pending.delete(device);
+      console.log(`[bridge] ${device} → ${args.url}`);
+      return np;
+    })();
+    pending.set(device, q);
+  }
+  return q;
 }
 
 await sub.psubscribe(`${ns}device:*:*`);
