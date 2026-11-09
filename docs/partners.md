@@ -47,9 +47,40 @@ WebSocket with the ingest token, one producer per wearable:
 git clone https://github.com/amplify-project/XR-telemetry.git
 cd XR-telemetry/gateway && npm install && cd ..
 node tools/bridge.mjs --redis redis://<hub>:6379 \
-     --url wss://<host>/telemetry/ingest --token <INGEST_TOKEN>
-# optional: --signals physio_metrics,engagement,valence_cont,arousal_cont
+     --url wss://<host>/telemetry/ingest --token <INGEST_TOKEN> \
+     --signals physio_metrics,valence_cont,arousal_cont,engagement,raw_sensors
 ```
+
+**On the venue's Windows PCs** it is one more launcher next to theirs:
+[`examples/physiological-signals/6_START_TELEMETRY_BRIDGE.bat`](../examples/physiological-signals/6_START_TELEMETRY_BRIDGE.bat).
+Set the clone path, ingest URL and token at its top, copy it into
+`Handover_Oct-Dec_Concerts\`, and start it after `1_START_REDIS.bat`. It checks
+Node.js (22 or newer), installs the dependencies the first time and restarts
+the bridge if it stops. It is optional: the venue works the same without it.
+
+`--signals` keeps the cloud to what is used there. Without it every
+`device:*:*` signal is forwarded, including the GUI feeds `hr_filtered` and
+`eda_filtered`. `raw_sensors` is a once-a-second snapshot of the latest value
+of each sensor: worth it for battery, temperature and humidity, not for motion
+or PPG analysis (the full-rate data stays in the venue's `raw_motion_*.csv`).
+
+**Pub/Sub and streams.** The bridge forwards what is `PUBLISH`ed and, for keys
+that are only `XADD`ed (`raw_sensors`), reads the stream. A key that has both is
+sent once, from Pub/Sub. Streams are read from the moment the bridge starts; a
+new key is picked up within 5 s. Works with Redis 5 (the Physiological-Signals
+Windows bundle); `--no-streams` turns the stream side off.
+
+**Crowd engagement.** The engagement GUI publishes the crowd average on the
+plain channel `engagement_score` as a bare number. The bridge forwards it as
+signal `engagement` of device `engagement-pc` (`--crowd-device` renames it),
+with `crowd: true`; it is part of `engagement` for `--signals`. Per-person
+engagement (`device:{serial}:engagement`) needs face ID: with `--no-face-id`
+only the crowd value exists.
+
+**Timestamps.** The EmotiBit publisher stamps samples with local time as ISO
+text (`2026-11-09T13:35:57.632660`, no zone); the bridge reads it as local time
+on its own PC, so run it in the venue's time zone (the hub PC is the natural
+place). Epoch seconds and ISO with a zone are taken as they are.
 
 What the bridge adds:
 
@@ -67,7 +98,9 @@ directly anyway.
 
 Running it on the engagement PC or the hub machine is enough: it only needs to
 reach the hub and the Internet. If the Internet drops, each wearable keeps up
-to 2000 samples queued and sends them on reconnect (about 30 minutes at 1 Hz).
+to 2000 samples queued, all its signals together, and sends them on reconnect:
+with the five signals above at 1 Hz, about 6 minutes. The venue keeps working
+meanwhile; only the cloud copy has a gap after that.
 
 ### Testing without wearables: `simulate_emotibits.py`
 
@@ -79,7 +112,7 @@ The archiver reads streams, so:
 | Simulator pointed at | Live (`/consume`, console) | Archived in the session |
 |---|---|---|
 | the gateway's Redis directly | yes | **no** (Pub/Sub only, no stream) |
-| its own hub, with the bridge | yes | yes (the bridge forwards Pub/Sub) |
+| its own hub, with the bridge | yes | yes (the bridge forwards Pub/Sub and stream-only keys) |
 
 Test through the bridge, as a venue would run it:
 
