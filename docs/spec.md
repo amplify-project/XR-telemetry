@@ -293,10 +293,11 @@ a remote gateway, a reference-clock `srv_ts` on every wearable sample. Optional 
 `srv_ts` once direct producers can get a reference clock (§6).
 
 **Livestreamed Immersive Player** — today publishes to its own relay with a
-compact wire format (`p`, `q`, `z`, `f`, `mt`, `rec`). Mapping: `p`→`px py pz`,
+compact wire format (`p`, `q`, `z`, `f`, `r`, `mt`, `rec`). Mapping: `p`→`px py pz`,
 `q`→`qx qy qz qw`, `gaze`→`gx gy gz`, `mt`→`media_t`, `srv`→`srv_ts`;
-`z` (zoom) and `f` (focused source) and `rec` (voice recording id) stay as
-project fields on `pose` or become `event`s *(open)*.
+`z` (zoom), `f` (focused source), `r` (emoji reaction id from the XR menu,
+present only while the reaction is held, ~3 s) and `rec` (voice recording id)
+stay as project fields on `pose`.
 
 ## 12. Open questions
 

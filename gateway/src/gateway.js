@@ -388,7 +388,7 @@ function toLegacy(m) {
     t: n(m.t_mono), w: m.timestamp != null ? Math.round(n(m.timestamp) * 1000) : null,
     srv: m.srv_ts != null ? Math.round(n(m.srv_ts) * 10000) / 10 : null, mt: n(m.media_t),
     p: vec('px', 'py', 'pz'), q: vec('qx', 'qy', 'qz', 'qw'), gaze: vec('gx', 'gy', 'gz'),
-    z: n(m.z), f: n(m.f),
+    z: n(m.z), f: n(m.f), r: m.r ?? null,
   };
 }
 function send(ws, data) { if (ws.readyState === 1) ws.send(data); }

@@ -2,9 +2,10 @@
 // The Livestreamed Immersive Player's original wire format, accepted as is so
 // the player can point at this gateway with no change (spec §11):
 //
-//   { b: [ { t, w, mt, p:[x,y,z], q:[x,y,z,w], g?:[x,y,z], z, f } ] }   (no `s`)
+//   { b: [ { t, w, mt, p:[x,y,z], q:[x,y,z,w], g?:[x,y,z], z, f, r? } ] }   (no `s`)
 //
-// mapped to a spec `pose` sample. `z` (zoom), `f` (focused source) and the
+// mapped to a spec `pose` sample. `z` (zoom), `f` (focused source), `r` (the
+// emoji reaction chosen in the XR menu, an id such as "clap", or null) and the
 // hello's `rec` (voice recording id) are player fields and pass through.
 
 function isLegacyBatch(msg) {
@@ -20,6 +21,7 @@ function legacyToPose(s, meta = {}) {
   if (s.mt !== undefined) out.media_t = s.mt;
   if (s.z !== undefined) out.z = s.z;
   if (s.f !== undefined) out.f = s.f;
+  if (s.r != null) out.r = String(s.r);
   out.frame = meta.frame || 'local-floor';
   if (meta.input) out.input = meta.input;
   if (meta.rec) out.rec = meta.rec;

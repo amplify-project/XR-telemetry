@@ -102,7 +102,8 @@ function line(m) {
   const t = clock(m.srv_ts ?? m.timestamp ?? Date.now() / 1000, true);
   const who = `${m.device}`.padEnd(16);
   if (m.signal === 'pose') {
-    const extra = ['media_t', 'z', 'f'].filter((k) => m[k] !== undefined).map((k) => `${k}=${f2(m[k])}`).join(' ');
+    const extra = ['media_t', 'z', 'f'].filter((k) => m[k] !== undefined).map((k) => `${k}=${f2(m[k])}`)
+      .concat(m.r != null ? [`r=${m.r}`] : []).join(' ');
     return `${t} ${who} pose   p=(${f2(m.px)}, ${f2(m.py)}, ${f2(m.pz)}) yaw=${yawDeg(m) ?? '—'}° ${extra}`;
   }
   if (m.signal === 'event') return `${t} ${who} EVENT  ${m.name}${m.value !== undefined ? ' = ' + m.value : ''}`;

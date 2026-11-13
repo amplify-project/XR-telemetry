@@ -399,7 +399,7 @@ function yaw(p) { return Math.atan2(2 * (p.qw * p.qy + p.qx * p.qz), 1 - 2 * (p.
 function rate(s, now) { while (s.times.length && now - s.times[0] > 5000) s.times.shift(); return s.times.length / 5; }
 function summary(sig, m) {
   if (sig === 'pose') return `p (${f2(m.px)}, ${f2(m.py)}, ${f2(m.pz)}) · yaw ${Math.round(yaw(m) * 180 / Math.PI)}°` +
-    (m.media_t != null ? ` · media ${f2(m.media_t)} s` : '') + (m.z != null ? ` · zoom ${f2(m.z)}` : '') + (m.f != null ? ` · focus ${esc(m.f)}` : '');
+    (m.media_t != null ? ` · media ${f2(m.media_t)} s` : '') + (m.z != null ? ` · zoom ${f2(m.z)}` : '') + (m.f != null ? ` · focus ${esc(m.f)}` : '') + (m.r != null ? ` · reaction ${esc(m.r)}` : '');
   const skip = new Set(['type', 'signal', 'device', 'timestamp', 'srv_ts', 'srv_err_ms', 't_mono', 'seq', 'session', 'participant']);
   return Object.entries(m).filter(([k, v]) => !skip.has(k) && typeof v !== 'object').slice(0, 6)
     .map(([k, v]) => `${esc(k)} ${typeof v === 'number' ? +v.toFixed(2) : esc(v)}`).join(' · ');
